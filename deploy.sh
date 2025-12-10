@@ -99,101 +99,94 @@ else
     echo -e "${YELLOW}No existing service account found. Terraform will create one.${NC}"
 fi
 
-# Collect API credentials
-echo ""
-echo "═══════════════════════════════════════════════════════════"
-echo "                    API CREDENTIALS                         "
-echo "═══════════════════════════════════════════════════════════"
-
-# Twilio
-echo ""
-echo -e "${YELLOW}TWILIO CONFIGURATION${NC}"
-echo "Get from: https://console.twilio.com"
-read -p "Twilio Account SID: " TWILIO_SID
-if [ -z "$TWILIO_SID" ]; then
-    echo -e "${RED}Twilio Account SID is required${NC}"
-    exit 1
+# Check if terraform.tfvars already exists (skip credential prompts if so)
+SKIP_CREDENTIALS=false
+if [ -f "terraform/terraform.tfvars" ]; then
+    echo ""
+    echo -e "${GREEN}Found existing terraform.tfvars - credentials already configured${NC}"
+    read -p "Use existing credentials? (Y/n): " USE_EXISTING
+    if [ "$USE_EXISTING" != "n" ] && [ "$USE_EXISTING" != "N" ]; then
+        SKIP_CREDENTIALS=true
+        # Extract TWILIO_PHONE from tfvars for final output
+        TWILIO_PHONE=$(grep 'twilio_phone_number' terraform/terraform.tfvars | cut -d'"' -f2)
+    fi
 fi
 
-read -sp "Twilio Auth Token: " TWILIO_TOKEN
-echo ""
-if [ -z "$TWILIO_TOKEN" ]; then
-    echo -e "${RED}Twilio Auth Token is required${NC}"
-    exit 1
-fi
+if [ "$SKIP_CREDENTIALS" = false ]; then
+    # Collect API credentials
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "                    API CREDENTIALS                         "
+    echo "═══════════════════════════════════════════════════════════"
 
-read -p "Twilio Phone Number (e.g., +14155551234): " TWILIO_PHONE
-if [ -z "$TWILIO_PHONE" ]; then
-    echo -e "${RED}Twilio Phone Number is required${NC}"
-    exit 1
-fi
+    # Twilio
+    echo ""
+    echo -e "${YELLOW}TWILIO CONFIGURATION${NC}"
+    echo "Get from: https://console.twilio.com"
+    read -p "Twilio Account SID: " TWILIO_SID
+    if [ -z "$TWILIO_SID" ]; then
+        echo -e "${RED}Twilio Account SID is required${NC}"
+        exit 1
+    fi
 
-# Gemini
-echo ""
-echo -e "${YELLOW}GEMINI API${NC}"
-echo "Get from: https://aistudio.google.com/app/apikey"
-read -sp "Gemini API Key: " GEMINI_KEY
-echo ""
-if [ -z "$GEMINI_KEY" ]; then
-    echo -e "${RED}Gemini API Key is required${NC}"
-    exit 1
-fi
+    read -sp "Twilio Auth Token: " TWILIO_TOKEN
+    echo ""
+    if [ -z "$TWILIO_TOKEN" ]; then
+        echo -e "${RED}Twilio Auth Token is required${NC}"
+        exit 1
+    fi
 
-# ElevenLabs
-echo ""
-echo -e "${YELLOW}ELEVENLABS CONFIGURATION${NC}"
-echo "Get from: https://elevenlabs.io -> Profile -> API Keys"
-read -sp "ElevenLabs API Key: " ELEVENLABS_KEY
-echo ""
-if [ -z "$ELEVENLABS_KEY" ]; then
-    echo -e "${RED}ElevenLabs API Key is required${NC}"
-    exit 1
-fi
+    read -p "Twilio Phone Number (e.g., +14155551234): " TWILIO_PHONE
+    if [ -z "$TWILIO_PHONE" ]; then
+        echo -e "${RED}Twilio Phone Number is required${NC}"
+        exit 1
+    fi
 
-read -p "ElevenLabs Voice ID [EXAVITQu4vr4xnSDxMaL]: " ELEVENLABS_VOICE
-ELEVENLABS_VOICE=${ELEVENLABS_VOICE:-EXAVITQu4vr4xnSDxMaL}
+    # Gemini
+    echo ""
+    echo -e "${YELLOW}GEMINI API${NC}"
+    echo "Get from: https://aistudio.google.com/app/apikey"
+    read -sp "Gemini API Key: " GEMINI_KEY
+    echo ""
+    if [ -z "$GEMINI_KEY" ]; then
+        echo -e "${RED}Gemini API Key is required${NC}"
+        exit 1
+    fi
 
-# Google Custom Search (optional)
-echo ""
-echo -e "${YELLOW}GOOGLE CUSTOM SEARCH (Optional)${NC}"
-echo "Get from: https://console.cloud.google.com/apis/credentials"
-echo "Press Enter to skip"
-read -sp "Google Search API Key: " GOOGLE_SEARCH_KEY
-echo ""
+    # ElevenLabs
+    echo ""
+    echo -e "${YELLOW}ELEVENLABS CONFIGURATION${NC}"
+    echo "Get from: https://elevenlabs.io -> Profile -> API Keys"
+    read -sp "ElevenLabs API Key: " ELEVENLABS_KEY
+    echo ""
+    if [ -z "$ELEVENLABS_KEY" ]; then
+        echo -e "${RED}ElevenLabs API Key is required${NC}"
+        exit 1
+    fi
 
-GOOGLE_SEARCH_CX=""
-if [ -n "$GOOGLE_SEARCH_KEY" ]; then
-    read -p "Google Search Engine ID: " GOOGLE_SEARCH_CX
-fi
+    read -p "ElevenLabs Voice ID [EXAVITQu4vr4xnSDxMaL]: " ELEVENLABS_VOICE
+    ELEVENLABS_VOICE=${ELEVENLABS_VOICE:-EXAVITQu4vr4xnSDxMaL}
 
-# Create Artifact Registry repository if it doesn't exist
-echo ""
-echo -e "${YELLOW}Setting up Artifact Registry...${NC}"
-if ! gcloud artifacts repositories describe codec --location=$REGION 2>/dev/null; then
-    gcloud artifacts repositories create codec \
-        --repository-format=docker \
-        --location=$REGION \
-        --description="Docker repository for CODEC AI Caller" 2>/dev/null || true
-fi
-echo -e "${GREEN}Artifact Registry ready${NC}"
+    # Google Custom Search (optional)
+    echo ""
+    echo -e "${YELLOW}GOOGLE CUSTOM SEARCH (Optional)${NC}"
+    echo "Get from: https://console.cloud.google.com/apis/credentials"
+    echo "Press Enter to skip"
+    read -sp "Google Search API Key: " GOOGLE_SEARCH_KEY
+    echo ""
 
-# Configure Docker for Artifact Registry
-gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+    GOOGLE_SEARCH_CX=""
+    if [ -n "$GOOGLE_SEARCH_KEY" ]; then
+        read -p "Google Search Engine ID: " GOOGLE_SEARCH_CX
+    fi
 
-# Create terraform.tfvars
-echo ""
-echo -e "${GREEN}Creating Terraform configuration...${NC}"
+    # Create terraform.tfvars
+    echo ""
+    echo -e "${GREEN}Creating Terraform configuration...${NC}"
 
-cd terraform
+    cd terraform
 
-# Clean old terraform state if corrupted
-if [ -f "terraform.tfstate" ]; then
-    echo -e "${YELLOW}Cleaning up old Terraform state...${NC}"
-    # Remove tainted resources from state
-    terraform state rm google_project_service.apis 2>/dev/null || true
-fi
-
-cat > terraform.tfvars << EOF
+    cat > terraform.tfvars << EOF
 project_id = "$PROJECT_ID"
 region     = "$REGION"
 
@@ -217,7 +210,26 @@ google_search_api_key   = "$GOOGLE_SEARCH_KEY"
 google_search_engine_id = "$GOOGLE_SEARCH_CX"
 EOF
 
-echo -e "${GREEN}terraform.tfvars created${NC}"
+    echo -e "${GREEN}terraform.tfvars created${NC}"
+else
+    cd terraform
+fi
+
+# Create Artifact Registry repository if it doesn't exist
+echo ""
+echo -e "${YELLOW}Setting up Artifact Registry...${NC}"
+if ! gcloud artifacts repositories describe codec --location=$REGION 2>/dev/null; then
+    gcloud artifacts repositories create codec \
+        --repository-format=docker \
+        --location=$REGION \
+        --description="Docker repository for CODEC AI Caller" 2>/dev/null || true
+fi
+echo -e "${GREEN}Artifact Registry ready${NC}"
+
+# Configure Docker for Artifact Registry
+gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+echo -e "${GREEN}Configuration ready${NC}"
 
 # Initialize Terraform
 echo ""
