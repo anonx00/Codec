@@ -10,9 +10,13 @@ resource "google_cloud_run_v2_service" "backend" {
     service_account = local.service_account_email
 
     scaling {
-      min_instance_count = 0
+      # Keep 1 instance warm to prevent cold start delays on voice calls
+      min_instance_count = 1
       max_instance_count = var.backend_max_instances
     }
+
+    # Session affinity ensures WebSocket stays on same instance
+    session_affinity = true
 
     containers {
       image = "${var.region}-docker.pkg.dev/${var.project_id}/codec/codec-backend:latest"
@@ -32,11 +36,6 @@ resource "google_cloud_run_v2_service" "backend" {
       env {
         name  = "GEMINI_MODEL"
         value = var.gemini_model
-      }
-
-      env {
-        name  = "ELEVENLABS_MODEL_ID"
-        value = var.elevenlabs_model_id
       }
 
       env {
@@ -86,26 +85,6 @@ resource "google_cloud_run_v2_service" "backend" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.gemini_api_key.secret_id
-            version = "latest"
-          }
-        }
-      }
-
-      env {
-        name = "ELEVENLABS_API_KEY"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.elevenlabs_api_key.secret_id
-            version = "latest"
-          }
-        }
-      }
-
-      env {
-        name = "ELEVENLABS_VOICE_ID"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.elevenlabs_voice_id.secret_id
             version = "latest"
           }
         }
@@ -161,7 +140,6 @@ resource "google_cloud_run_v2_service" "backend" {
     google_secret_manager_secret_version.twilio_account_sid,
     google_secret_manager_secret_version.twilio_auth_token,
     google_secret_manager_secret_version.gemini_api_key,
-    google_secret_manager_secret_version.elevenlabs_api_key,
   ]
 }
 
