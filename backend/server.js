@@ -494,6 +494,16 @@ app.get('/api/call/:callSid', async (req, res) => {
     res.json({ sid: callSid, ...state });
 });
 
+// GET handler for browser visits
+app.get('/twilio/voice', (req, res) => {
+    res.json({
+        endpoint: '/twilio/voice',
+        method: 'POST',
+        description: 'Twilio webhook endpoint for incoming calls',
+        note: 'This endpoint only accepts POST requests from Twilio. Configure this URL in your Twilio phone number settings.'
+    });
+});
+
 app.post('/twilio/voice', (req, res) => {
     const serverDomain = process.env.SERVER_DOMAIN;
     res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
