@@ -79,6 +79,7 @@ gcloud services enable artifactregistry.googleapis.com --project="$PROJECT_ID" 2
 gcloud services enable run.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
 gcloud services enable secretmanager.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
 gcloud services enable cloudbuild.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable aiplatform.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
 echo -e "${GREEN}Base APIs enabled${NC}"
 
 # Wait for APIs to propagate
@@ -278,6 +279,7 @@ terraform apply \
     -target=google_project_service.apis \
     -target=google_service_account.codec_backend \
     -target=google_project_iam_member.secret_accessor \
+    -target=google_project_iam_member.vertex_ai_user \
     -target=google_artifact_registry_repository.codec \
     -target=google_secret_manager_secret.twilio_account_sid \
     -target=google_secret_manager_secret.twilio_auth_token \

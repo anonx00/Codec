@@ -43,6 +43,12 @@ resource "google_cloud_run_v2_service" "backend" {
         value = var.google_search_engine_id
       }
 
+      # GCP Project ID for Vertex AI
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
+
       # SERVER_DOMAIN will be set after first deployment
       env {
         name  = "SERVER_DOMAIN"
