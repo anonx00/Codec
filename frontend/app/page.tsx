@@ -451,14 +451,42 @@ export default function Home() {
             </h2>
             <p className="text-slate-400 mb-4">{pendingCall?.phone}</p>
 
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-full">
+            <div className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-full mb-6">
               <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
               <span className="text-slate-300 capitalize">{callStatus?.status || 'connecting'}</span>
             </div>
 
-            <p className="text-sm text-slate-500 mt-6">
+            <p className="text-sm text-slate-500 mb-6">
               I&apos;m handling the conversation for you...
             </p>
+
+            {/* End Call Button */}
+            <button
+              onClick={async () => {
+                if (callStatus?.sid) {
+                  try {
+                    await fetch(`${API_URL}/api/call/${callStatus.sid}/hangup`, { method: 'POST' });
+                    setMessages(prev => [...prev, {
+                      id: `hangup-${Date.now()}`,
+                      role: 'system',
+                      content: 'Call ended by you. Is there anything else you need?',
+                      timestamp: new Date()
+                    }]);
+                    setView('chat');
+                    setPendingCall(null);
+                    setCallStatus(null);
+                  } catch (err) {
+                    console.error('Hangup error:', err);
+                  }
+                }
+              }}
+              className="px-8 py-3 bg-red-600 text-white font-medium rounded-full hover:bg-red-700 transition-colors flex items-center gap-2 mx-auto"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+              </svg>
+              End Call
+            </button>
           </div>
         </div>
       )}
