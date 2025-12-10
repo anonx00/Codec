@@ -66,11 +66,11 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Native audio model for real-time voice calls (Live API only)
-const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
+// Live API model for real-time voice calls
+const GEMINI_LIVE_MODEL = 'gemini-2.0-flash-live-001';
 // Standard model for text chat (REST API)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
-// Use v1alpha for native audio features (affective dialog, proactive audio)
+// Use v1alpha for live API
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -168,31 +168,20 @@ function preEstablishGemini(sessionId, state) {
                 ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
                 : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
 
-            // Full native audio config with all features
+            // Live API config - keep it simple and reliable
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: `models/${GEMINI_LIVE_MODEL}`,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
-                    // Native audio features
-                    enableAffectiveDialog: true,  // Emotion-aware responses
-                    proactivity: { proactiveAudio: true },  // Model decides when to respond
-                    // VAD configuration for phone calls
                     realtimeInputConfig: {
-                        automaticActivityDetection: {
-                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",  // Don't cut off too fast
-                            prefixPaddingMs: 100,  // Capture speech start
-                            silenceDurationMs: 500  // Wait for natural pauses
-                        }
-                    },
-                    // Get transcriptions for debugging
-                    outputAudioTranscription: {}
+                        automaticActivityDetection: {}
+                    }
                 }
             }));
         });
@@ -450,104 +439,10 @@ wss.on('connection', (twilioWs) => {
             try {
                 const msg = JSON.parse(data.toString());
 
-                // Handle interruption - user started speaking
+                // Handle interruption
                 if (msg.serverContent?.interrupted) {
-                    console.log('[GEMINI] Interrupted by user');
-                    // Could clear Twilio's audio buffer here if needed
+                    console.log('[GEMINI] Interrupted');
                     return;
-                }
-
-                // Log AI transcriptions for debugging
-                if (msg.serverContent?.outputTranscription?.text) {
-                    console.log('[AI]', msg.serverContent.outputTranscription.text);
-                }
-
-                // Stream audio directly to Twilio
-                if (msg.serverContent?.modelTurn?.parts) {
-                    for (const part of msg.serverContent.modelTurn.parts) {
-                        if (part.inlineData?.data) {
-                            const pcm = Buffer.from(part.inlineData.data, 'base64');
-                            const mulaw = pcm24kToMulaw8k(pcm);
-
-                            if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
-                                twilioWs.send(JSON.stringify({
-                                    event: 'media',
-                                    streamSid,
-                                    media: { payload: mulaw.toString('base64') }
-                                }));
-                            }
-                        }
-                    }
-                }
-            } catch (e) {}
-        });
-
-        gWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
-        gWs.on('close', () => { ready = false; });
-    };
-
-    // Fallback: create Gemini on-the-fly if no pre-established session
-    const startGeminiFallback = (state) => {
-        console.log('[GEMINI] No pre-established session, creating new one...');
-        geminiWs = new WebSocket(GEMINI_WS_URL);
-
-        geminiWs.on('open', () => {
-            console.log('[GEMINI] Fallback connected');
-
-            const prompt = direction === 'inbound'
-                ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
-                : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
-
-            // Full native audio config
-            geminiWs.send(JSON.stringify({
-                setup: {
-                    model: `models/${GEMINI_LIVE_MODEL}`,
-                    generationConfig: {
-                        responseModalities: ["AUDIO"],
-                        speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
-                        }
-                    },
-                    systemInstruction: { parts: [{ text: prompt }] },
-                    enableAffectiveDialog: true,
-                    proactivity: { proactiveAudio: true },
-                    realtimeInputConfig: {
-                        automaticActivityDetection: {
-                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-                            prefixPaddingMs: 100,
-                            silenceDurationMs: 500
-                        }
-                    },
-                    outputAudioTranscription: {}
-                }
-            }));
-        });
-
-        geminiWs.on('message', (data) => {
-            try {
-                const msg = JSON.parse(data.toString());
-
-                if (msg.setupComplete) {
-                    console.log('[GEMINI] Fallback ready');
-                    ready = true;
-
-                    // Signal turn complete to trigger AI response
-                    geminiWs.send(JSON.stringify({
-                        clientContent: { turnComplete: true }
-                    }));
-                    return;
-                }
-
-                // Handle interruption - stop any pending audio
-                if (msg.serverContent?.interrupted) {
-                    console.log('[GEMINI] Interrupted by user');
-                    return;
-                }
-
-                // Log transcriptions for debugging
-                if (msg.serverContent?.outputTranscription?.text) {
-                    console.log('[AI]', msg.serverContent.outputTranscription.text);
                 }
 
                 // Stream audio to Twilio
@@ -567,11 +462,90 @@ wss.on('connection', (twilioWs) => {
                         }
                     }
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.error('[GEMINI] Parse error:', e.message);
+            }
+        });
+
+        gWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
+        gWs.on('close', () => { ready = false; console.log('[GEMINI] Closed'); });
+    };
+
+    // Fallback: create Gemini on-the-fly if no pre-established session
+    const startGeminiFallback = (state) => {
+        console.log('[GEMINI] No pre-established session, creating new one...');
+        geminiWs = new WebSocket(GEMINI_WS_URL);
+
+        geminiWs.on('open', () => {
+            console.log('[GEMINI] Fallback connected');
+
+            const prompt = direction === 'inbound'
+                ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
+                : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
+
+            // Live API config - simple and reliable
+            geminiWs.send(JSON.stringify({
+                setup: {
+                    model: `models/${GEMINI_LIVE_MODEL}`,
+                    generationConfig: {
+                        responseModalities: ["AUDIO"],
+                        speechConfig: {
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                        }
+                    },
+                    systemInstruction: { parts: [{ text: prompt }] },
+                    realtimeInputConfig: {
+                        automaticActivityDetection: {}
+                    }
+                }
+            }));
+        });
+
+        geminiWs.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+
+                if (msg.setupComplete) {
+                    console.log('[GEMINI] Fallback ready');
+                    ready = true;
+
+                    // Trigger AI to speak first
+                    geminiWs.send(JSON.stringify({
+                        clientContent: { turnComplete: true }
+                    }));
+                    return;
+                }
+
+                // Handle interruption
+                if (msg.serverContent?.interrupted) {
+                    console.log('[GEMINI] Interrupted');
+                    return;
+                }
+
+                // Stream audio to Twilio
+                if (msg.serverContent?.modelTurn?.parts) {
+                    for (const part of msg.serverContent.modelTurn.parts) {
+                        if (part.inlineData?.data) {
+                            const pcm = Buffer.from(part.inlineData.data, 'base64');
+                            const mulaw = pcm24kToMulaw8k(pcm);
+
+                            if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
+                                twilioWs.send(JSON.stringify({
+                                    event: 'media',
+                                    streamSid,
+                                    media: { payload: mulaw.toString('base64') }
+                                }));
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('[GEMINI] Parse error:', e.message);
+            }
         });
 
         geminiWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
-        geminiWs.on('close', () => { ready = false; });
+        geminiWs.on('close', () => { ready = false; console.log('[GEMINI] Closed'); });
     };
 
     twilioWs.on('message', (message) => {
@@ -629,4 +603,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.4 Ready - Full Native Audio with Affective Dialog + Proactive Audio');
+console.log('[CODEC] v5.5 Ready - Live API with Pre-established Sessions');
