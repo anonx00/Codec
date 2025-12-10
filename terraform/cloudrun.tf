@@ -15,7 +15,7 @@ resource "google_cloud_run_v2_service" "backend" {
     }
 
     containers {
-      image = "gcr.io/${var.project_id}/codec-backend:latest"
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/codec/codec-backend:latest"
 
       ports {
         container_port = 8080
@@ -192,7 +192,7 @@ resource "google_cloud_run_v2_service" "frontend" {
     }
 
     containers {
-      image = "gcr.io/${var.project_id}/codec-frontend:latest"
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/codec/codec-frontend:latest"
 
       ports {
         container_port = 3000

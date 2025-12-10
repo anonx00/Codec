@@ -68,20 +68,35 @@ echo -e "${YELLOW}Note: Make sure billing is enabled for project $PROJECT_ID${NC
 echo "Visit: https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT_ID"
 read -p "Press Enter to continue once billing is confirmed..."
 
+# Enable Cloud Resource Manager API first (required for Terraform)
+echo ""
+echo -e "${YELLOW}Enabling required base APIs (this may take a minute)...${NC}"
+gcloud services enable cloudresourcemanager.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable iam.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable serviceusage.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable artifactregistry.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable run.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable secretmanager.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable cloudbuild.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+echo -e "${GREEN}Base APIs enabled${NC}"
+
+# Wait for APIs to propagate
+echo -e "${YELLOW}Waiting for APIs to propagate...${NC}"
+sleep 10
+
 # Set region
 REGION="australia-southeast1"
 echo ""
 echo -e "${GREEN}Using region: $REGION (Australia)${NC}"
 
-# Optional: Use existing service account
+# Check for existing service account
 echo ""
-echo -e "${YELLOW}SERVICE ACCOUNT (Optional)${NC}"
-echo "Leave empty to create a new service account, or enter existing email"
-read -p "Existing Service Account Email []: " EXISTING_SA
-EXISTING_SA=${EXISTING_SA:-""}
+echo -e "${YELLOW}Checking for existing service account...${NC}"
+EXISTING_SA=$(gcloud iam service-accounts list --filter="email:codec-backend-sa@$PROJECT_ID.iam.gserviceaccount.com" --format="value(email)" 2>/dev/null || echo "")
 if [ -n "$EXISTING_SA" ]; then
-    echo -e "${GREEN}Will use existing service account: $EXISTING_SA${NC}"
-    echo -e "${YELLOW}Ensure it has 'Secret Manager Secret Accessor' role assigned${NC}"
+    echo -e "${GREEN}Found existing service account: $EXISTING_SA${NC}"
+else
+    echo -e "${YELLOW}No existing service account found. Terraform will create one.${NC}"
 fi
 
 # Collect API credentials
@@ -138,21 +153,45 @@ fi
 read -p "ElevenLabs Voice ID [EXAVITQu4vr4xnSDxMaL]: " ELEVENLABS_VOICE
 ELEVENLABS_VOICE=${ELEVENLABS_VOICE:-EXAVITQu4vr4xnSDxMaL}
 
-# Google Search (optional)
+# Google Custom Search (optional)
 echo ""
 echo -e "${YELLOW}GOOGLE CUSTOM SEARCH (Optional)${NC}"
 echo "Get from: https://console.cloud.google.com/apis/credentials"
 echo "Press Enter to skip"
 read -sp "Google Search API Key: " GOOGLE_SEARCH_KEY
 echo ""
-read -p "Google Search Engine ID [3145e6eb05b6c4de8]: " GOOGLE_SEARCH_CX
-GOOGLE_SEARCH_CX=${GOOGLE_SEARCH_CX:-3145e6eb05b6c4de8}
+
+GOOGLE_SEARCH_CX=""
+if [ -n "$GOOGLE_SEARCH_KEY" ]; then
+    read -p "Google Search Engine ID: " GOOGLE_SEARCH_CX
+fi
+
+# Create Artifact Registry repository if it doesn't exist
+echo ""
+echo -e "${YELLOW}Setting up Artifact Registry...${NC}"
+if ! gcloud artifacts repositories describe codec --location=$REGION 2>/dev/null; then
+    gcloud artifacts repositories create codec \
+        --repository-format=docker \
+        --location=$REGION \
+        --description="Docker repository for CODEC AI Caller" 2>/dev/null || true
+fi
+echo -e "${GREEN}Artifact Registry ready${NC}"
+
+# Configure Docker for Artifact Registry
+gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
 # Create terraform.tfvars
 echo ""
 echo -e "${GREEN}Creating Terraform configuration...${NC}"
 
 cd terraform
+
+# Clean old terraform state if corrupted
+if [ -f "terraform.tfstate" ]; then
+    echo -e "${YELLOW}Cleaning up old Terraform state...${NC}"
+    # Remove tainted resources from state
+    terraform state rm google_project_service.apis 2>/dev/null || true
+fi
 
 cat > terraform.tfvars << EOF
 project_id = "$PROJECT_ID"
@@ -180,24 +219,92 @@ EOF
 
 echo -e "${GREEN}terraform.tfvars created${NC}"
 
-# Initialize and apply Terraform (first pass - just secrets and APIs)
+# Initialize Terraform
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "              INITIALIZING INFRASTRUCTURE                   "
 echo "═══════════════════════════════════════════════════════════"
 
-terraform init
+terraform init -upgrade
 
-# Apply just the secrets first
-echo -e "${YELLOW}Creating secrets in Secret Manager...${NC}"
-terraform apply -target=google_project_service.apis -auto-approve
-terraform apply -target=google_service_account.codec_backend -auto-approve
-terraform apply -target=google_secret_manager_secret.twilio_account_sid -auto-approve
-terraform apply -target=google_secret_manager_secret.twilio_auth_token -auto-approve
-terraform apply -target=google_secret_manager_secret.twilio_phone_number -auto-approve
-terraform apply -target=google_secret_manager_secret.gemini_api_key -auto-approve
-terraform apply -target=google_secret_manager_secret.elevenlabs_api_key -auto-approve
-terraform apply -target=google_secret_manager_secret.elevenlabs_voice_id -auto-approve
+# Import existing resources if they exist (prevents duplication errors)
+echo -e "${YELLOW}Checking for existing resources to import...${NC}"
+
+# Import service account if exists
+if [ -n "$EXISTING_SA" ]; then
+    echo "Using existing service account: $EXISTING_SA"
+elif [ -z "$(terraform state list google_service_account.codec_backend 2>/dev/null)" ]; then
+    SA_CHECK=$(gcloud iam service-accounts list --filter="email:codec-backend-sa@$PROJECT_ID.iam.gserviceaccount.com" --format="value(email)" 2>/dev/null || echo "")
+    if [ -n "$SA_CHECK" ]; then
+        echo "Importing existing service account..."
+        terraform import "google_service_account.codec_backend[0]" "projects/$PROJECT_ID/serviceAccounts/codec-backend-sa@$PROJECT_ID.iam.gserviceaccount.com" 2>/dev/null || true
+    fi
+fi
+
+# Import existing secrets
+import_secret_if_exists() {
+    SECRET_NAME=$1
+    TF_RESOURCE=$2
+
+    # Check if already in state
+    if terraform state list "$TF_RESOURCE" 2>/dev/null | grep -q "$TF_RESOURCE"; then
+        return 0
+    fi
+
+    # Check if exists in GCP
+    if gcloud secrets describe "$SECRET_NAME" --project="$PROJECT_ID" 2>/dev/null; then
+        echo "Importing existing secret: $SECRET_NAME"
+        terraform import "$TF_RESOURCE" "projects/$PROJECT_ID/secrets/$SECRET_NAME" 2>/dev/null || true
+    fi
+}
+
+import_secret_if_exists "twilio-account-sid" "google_secret_manager_secret.twilio_account_sid"
+import_secret_if_exists "twilio-auth-token" "google_secret_manager_secret.twilio_auth_token"
+import_secret_if_exists "twilio-phone-number" "google_secret_manager_secret.twilio_phone_number"
+import_secret_if_exists "gemini-api-key" "google_secret_manager_secret.gemini_api_key"
+import_secret_if_exists "elevenlabs-api-key" "google_secret_manager_secret.elevenlabs_api_key"
+import_secret_if_exists "elevenlabs-voice-id" "google_secret_manager_secret.elevenlabs_voice_id"
+if [ -n "$GOOGLE_SEARCH_KEY" ]; then
+    import_secret_if_exists "google-search-api-key" "google_secret_manager_secret.google_search_api_key[0]"
+fi
+
+# Import Artifact Registry if exists
+if [ -z "$(terraform state list google_artifact_registry_repository.codec 2>/dev/null)" ]; then
+    if gcloud artifacts repositories describe codec --location=$REGION 2>/dev/null; then
+        echo "Importing existing Artifact Registry repository..."
+        terraform import google_artifact_registry_repository.codec "projects/$PROJECT_ID/locations/$REGION/repositories/codec" 2>/dev/null || true
+    fi
+fi
+
+echo -e "${GREEN}Resource check complete${NC}"
+
+# Apply Terraform (infrastructure only, no Cloud Run yet)
+echo ""
+echo -e "${YELLOW}Creating infrastructure (secrets, service account, IAM)...${NC}"
+terraform apply \
+    -target=google_project_service.apis \
+    -target=google_service_account.codec_backend \
+    -target=google_project_iam_member.secret_accessor \
+    -target=google_artifact_registry_repository.codec \
+    -target=google_secret_manager_secret.twilio_account_sid \
+    -target=google_secret_manager_secret.twilio_auth_token \
+    -target=google_secret_manager_secret.twilio_phone_number \
+    -target=google_secret_manager_secret.gemini_api_key \
+    -target=google_secret_manager_secret.elevenlabs_api_key \
+    -target=google_secret_manager_secret.elevenlabs_voice_id \
+    -target=google_secret_manager_secret_version.twilio_account_sid \
+    -target=google_secret_manager_secret_version.twilio_auth_token \
+    -target=google_secret_manager_secret_version.twilio_phone_number \
+    -target=google_secret_manager_secret_version.gemini_api_key \
+    -target=google_secret_manager_secret_version.elevenlabs_api_key \
+    -target=google_secret_manager_secret_version.elevenlabs_voice_id \
+    -target=google_secret_manager_secret_iam_member.twilio_sid_access \
+    -target=google_secret_manager_secret_iam_member.twilio_token_access \
+    -target=google_secret_manager_secret_iam_member.twilio_phone_access \
+    -target=google_secret_manager_secret_iam_member.gemini_access \
+    -target=google_secret_manager_secret_iam_member.elevenlabs_key_access \
+    -target=google_secret_manager_secret_iam_member.elevenlabs_voice_access \
+    -auto-approve
 
 # Build and push Docker images
 echo ""
@@ -207,23 +314,22 @@ echo "════════════════════════�
 
 cd ..
 
-# Configure Docker for GCR
-gcloud auth configure-docker gcr.io --quiet
+IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/codec"
 
 # Build backend
 echo -e "${YELLOW}Building backend...${NC}"
-docker build -t gcr.io/$PROJECT_ID/codec-backend:latest ./backend
-docker push gcr.io/$PROJECT_ID/codec-backend:latest
+docker build -t ${IMAGE_BASE}/codec-backend:latest ./backend
+docker push ${IMAGE_BASE}/codec-backend:latest
 
-# Build frontend (need backend URL first, use placeholder)
+# Build frontend (with placeholder URL initially)
 echo -e "${YELLOW}Building frontend...${NC}"
 docker build \
     --build-arg NEXT_PUBLIC_API_URL=https://codec-backend-placeholder.run.app \
-    -t gcr.io/$PROJECT_ID/codec-frontend:latest \
+    -t ${IMAGE_BASE}/codec-frontend:latest \
     ./frontend
-docker push gcr.io/$PROJECT_ID/codec-frontend:latest
+docker push ${IMAGE_BASE}/codec-frontend:latest
 
-# Now apply full Terraform
+# Deploy to Cloud Run
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "                 DEPLOYING TO CLOUD RUN                     "
@@ -243,13 +349,13 @@ if [ -n "$BACKEND_URL" ]; then
     cd ..
     docker build \
         --build-arg NEXT_PUBLIC_API_URL=$BACKEND_URL \
-        -t gcr.io/$PROJECT_ID/codec-frontend:latest \
+        -t ${IMAGE_BASE}/codec-frontend:latest \
         ./frontend
-    docker push gcr.io/$PROJECT_ID/codec-frontend:latest
+    docker push ${IMAGE_BASE}/codec-frontend:latest
 
     # Update Cloud Run
     gcloud run deploy codec-frontend \
-        --image gcr.io/$PROJECT_ID/codec-frontend:latest \
+        --image ${IMAGE_BASE}/codec-frontend:latest \
         --region $REGION \
         --set-env-vars "NEXT_PUBLIC_API_URL=$BACKEND_URL" \
         --quiet
@@ -272,14 +378,13 @@ echo -e "${YELLOW}IMPORTANT: Configure Twilio Webhook${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 echo "1. Go to: https://console.twilio.com"
-echo "2. Navigate to: Phone Numbers -> Manage -> Active Numbers"
-echo "3. Click on: $TWILIO_PHONE"
-echo "4. Under 'Voice Configuration', set:"
-echo ""
-echo -e "   Webhook URL: ${GREEN}$BACKEND_URL/twilio/voice${NC}"
-echo "   Method: POST"
-echo ""
-echo "5. Save the configuration"
+echo "2. Navigate to: Phone Numbers → Manage → Active Numbers"
+echo "3. Click on your number: $TWILIO_PHONE"
+echo "4. Under 'Voice Configuration':"
+echo "   - Set 'A call comes in' webhook to:"
+echo -e "     ${GREEN}${BACKEND_URL}/twilio/voice${NC}"
+echo "   - Method: POST"
+echo "5. Save"
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo ""
