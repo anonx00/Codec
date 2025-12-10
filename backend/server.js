@@ -66,8 +66,9 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Use native audio model for real-time voice
-const GEMINI_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog';
+// Native audio model for true real-time voice (from docs)
+const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
+// Use v1alpha for native audio features (affective dialog, proactive audio)
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -160,11 +161,12 @@ function preEstablishGemini(sessionId, state) {
         geminiWs.on('open', () => {
             console.log(`[GEMINI] Pre-establishing for ${sessionId}`);
 
-            // Build prompt - tell it to speak immediately when audio stream starts
+            // Build prompt - natural phone conversation
             const prompt = state.direction === 'inbound'
-                ? `You're answering a phone call for ${state.businessName}. As soon as you hear the caller, greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
-                : `You're making a phone call to ${state.businessName} about: ${state.task}. As soon as you hear them pick up, immediately say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short.`;
+                ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
+                : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
 
+            // Full native audio config with all features
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: `models/${GEMINI_MODEL}`,
@@ -175,12 +177,20 @@ function preEstablishGemini(sessionId, state) {
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
+                    // Native audio features
+                    enableAffectiveDialog: true,  // Emotion-aware responses
+                    proactivity: { proactiveAudio: true },  // Model decides when to respond
+                    // VAD configuration for phone calls
                     realtimeInputConfig: {
                         automaticActivityDetection: {
                             startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_SENSITIVITY_HIGH"
+                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",  // Don't cut off too fast
+                            prefixPaddingMs: 100,  // Capture speech start
+                            silenceDurationMs: 500  // Wait for natural pauses
                         }
-                    }
+                    },
+                    // Get transcriptions for debugging
+                    outputAudioTranscription: {}
                 }
             }));
         });
@@ -438,6 +448,18 @@ wss.on('connection', (twilioWs) => {
             try {
                 const msg = JSON.parse(data.toString());
 
+                // Handle interruption - user started speaking
+                if (msg.serverContent?.interrupted) {
+                    console.log('[GEMINI] Interrupted by user');
+                    // Could clear Twilio's audio buffer here if needed
+                    return;
+                }
+
+                // Log AI transcriptions for debugging
+                if (msg.serverContent?.outputTranscription?.text) {
+                    console.log('[AI]', msg.serverContent.outputTranscription.text);
+                }
+
                 // Stream audio directly to Twilio
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
@@ -471,9 +493,10 @@ wss.on('connection', (twilioWs) => {
             console.log('[GEMINI] Fallback connected');
 
             const prompt = direction === 'inbound'
-                ? `You're answering a phone call for ${state.businessName}. As soon as you hear the caller, greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
-                : `You're making a phone call to ${state.businessName} about: ${state.task}. As soon as you hear them pick up, immediately say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short.`;
+                ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
+                : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
 
+            // Full native audio config
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: `models/${GEMINI_MODEL}`,
@@ -484,12 +507,17 @@ wss.on('connection', (twilioWs) => {
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
+                    enableAffectiveDialog: true,
+                    proactivity: { proactiveAudio: true },
                     realtimeInputConfig: {
                         automaticActivityDetection: {
                             startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_SENSITIVITY_HIGH"
+                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                            prefixPaddingMs: 100,
+                            silenceDurationMs: 500
                         }
-                    }
+                    },
+                    outputAudioTranscription: {}
                 }
             }));
         });
@@ -502,14 +530,22 @@ wss.on('connection', (twilioWs) => {
                     console.log('[GEMINI] Fallback ready');
                     ready = true;
 
-                    // Signal we're ready - send empty audio to trigger VAD
-                    // This tells Gemini the call started and it should speak
+                    // Signal turn complete to trigger AI response
                     geminiWs.send(JSON.stringify({
-                        clientContent: {
-                            turnComplete: true
-                        }
+                        clientContent: { turnComplete: true }
                     }));
                     return;
+                }
+
+                // Handle interruption - stop any pending audio
+                if (msg.serverContent?.interrupted) {
+                    console.log('[GEMINI] Interrupted by user');
+                    return;
+                }
+
+                // Log transcriptions for debugging
+                if (msg.serverContent?.outputTranscription?.text) {
+                    console.log('[AI]', msg.serverContent.outputTranscription.text);
                 }
 
                 // Stream audio to Twilio
@@ -591,4 +627,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.3 Ready - Native Audio Model + Pre-established sessions');
+console.log('[CODEC] v5.4 Ready - Full Native Audio with Affective Dialog + Proactive Audio');
