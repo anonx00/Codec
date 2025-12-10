@@ -30,11 +30,6 @@ resource "google_cloud_run_v2_service" "backend" {
 
       # Environment variables (non-sensitive)
       env {
-        name  = "PORT"
-        value = "8080"
-      }
-
-      env {
         name  = "GEMINI_MODEL"
         value = var.gemini_model
       }
