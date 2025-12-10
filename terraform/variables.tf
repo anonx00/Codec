@@ -49,25 +49,6 @@ variable "gemini_model" {
   default     = "gemini-2.0-flash-exp"
 }
 
-# ElevenLabs
-variable "elevenlabs_api_key" {
-  description = "ElevenLabs API Key"
-  type        = string
-  sensitive   = true
-}
-
-variable "elevenlabs_voice_id" {
-  description = "ElevenLabs Voice ID"
-  type        = string
-  default     = "EXAVITQu4vr4xnSDxMaL" # Eric voice
-}
-
-variable "elevenlabs_model_id" {
-  description = "ElevenLabs Model ID"
-  type        = string
-  default     = "eleven_turbo_v2"
-}
-
 # Google Custom Search
 variable "google_search_api_key" {
   description = "Google Custom Search API Key"

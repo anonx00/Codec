@@ -68,40 +68,6 @@ resource "google_secret_manager_secret_version" "gemini_api_key" {
   secret_data = var.gemini_api_key
 }
 
-# ElevenLabs API Key
-resource "google_secret_manager_secret" "elevenlabs_api_key" {
-  secret_id = "elevenlabs-api-key"
-  project   = var.project_id
-
-  replication {
-    auto {}
-  }
-
-  depends_on = [google_project_service.apis]
-}
-
-resource "google_secret_manager_secret_version" "elevenlabs_api_key" {
-  secret      = google_secret_manager_secret.elevenlabs_api_key.id
-  secret_data = var.elevenlabs_api_key
-}
-
-# ElevenLabs Voice ID
-resource "google_secret_manager_secret" "elevenlabs_voice_id" {
-  secret_id = "elevenlabs-voice-id"
-  project   = var.project_id
-
-  replication {
-    auto {}
-  }
-
-  depends_on = [google_project_service.apis]
-}
-
-resource "google_secret_manager_secret_version" "elevenlabs_voice_id" {
-  secret      = google_secret_manager_secret.elevenlabs_voice_id.id
-  secret_data = var.elevenlabs_voice_id
-}
-
 # Google Search API Key (optional)
 resource "google_secret_manager_secret" "google_search_api_key" {
   count     = var.google_search_api_key != "" ? 1 : 0
@@ -142,18 +108,6 @@ resource "google_secret_manager_secret_iam_member" "twilio_phone_access" {
 
 resource "google_secret_manager_secret_iam_member" "gemini_access" {
   secret_id = google_secret_manager_secret.gemini_api_key.id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${local.service_account_email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "elevenlabs_key_access" {
-  secret_id = google_secret_manager_secret.elevenlabs_api_key.id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${local.service_account_email}"
-}
-
-resource "google_secret_manager_secret_iam_member" "elevenlabs_voice_access" {
-  secret_id = google_secret_manager_secret.elevenlabs_voice_id.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${local.service_account_email}"
 }
