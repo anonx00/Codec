@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 8080;
 
-// Initialize Twilio (lazy - only when needed)
+// Initialize Twilio
 let twilioClient = null;
 const getTwilioClient = () => {
     if (!twilioClient) {
@@ -33,27 +33,30 @@ const getTwilioClient = () => {
 // STATE MANAGEMENT
 // ============================================================================
 
-// Store active call state with TTL cleanup
 const callState = new Map();
-const CALL_STATE_TTL = 30 * 60 * 1000; // 30 minutes
+const conversationState = new Map(); // Store chat conversations
+const CALL_STATE_TTL = 30 * 60 * 1000;
 
-// Inbound call configuration (persisted in memory, could be moved to database)
 let inboundConfig = {
     enabled: true,
     greeting: "Hello, thank you for calling. How can I help you today?",
     businessName: "CODEC AI Assistant",
     purpose: "general assistance",
-    instructions: "Be helpful, professional, and concise. Answer questions and assist callers with their needs.",
+    instructions: "Be helpful, professional, and concise.",
     voiceId: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL'
 };
 
-// Cleanup old call states periodically
+// Cleanup
 setInterval(() => {
     const now = Date.now();
     for (const [sid, state] of callState.entries()) {
         if (now - new Date(state.startTime).getTime() > CALL_STATE_TTL) {
             callState.delete(sid);
-            console.log(`[CLEANUP] Removed stale call state: ${sid}`);
+        }
+    }
+    for (const [id, conv] of conversationState.entries()) {
+        if (now - conv.lastUpdate > CALL_STATE_TTL) {
+            conversationState.delete(id);
         }
     }
 }, 5 * 60 * 1000);
@@ -63,7 +66,7 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp';
+const GEMINI_MODEL = 'gemini-2.0-flash-exp';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -73,10 +76,10 @@ const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 let voicesCache = null;
 let voicesCacheTime = 0;
-const VOICES_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const VOICES_CACHE_TTL = 60 * 60 * 1000;
 
 // ============================================================================
-// AUDIO CONVERSION - Pre-computed lookup table
+// AUDIO CONVERSION
 // ============================================================================
 
 const MULAW_DECODE_TABLE = new Int16Array([
@@ -119,8 +122,6 @@ function mulawToPcm16(mulawBuffer) {
     for (let i = 0; i < mulawBuffer.length; i++) {
         pcm8k[i] = MULAW_DECODE_TABLE[mulawBuffer[i]];
     }
-
-    // Upsample 8kHz to 16kHz with linear interpolation
     const pcm16k = new Int16Array(pcm8k.length * 2);
     for (let i = 0; i < pcm8k.length - 1; i++) {
         pcm16k[i * 2] = pcm8k[i];
@@ -128,46 +129,47 @@ function mulawToPcm16(mulawBuffer) {
     }
     pcm16k[pcm16k.length - 2] = pcm8k[pcm8k.length - 1];
     pcm16k[pcm16k.length - 1] = pcm8k[pcm8k.length - 1];
-
     return Buffer.from(pcm16k.buffer);
 }
 
 // ============================================================================
-// SYSTEM PROMPTS
+// CHAT SYSTEM PROMPT
 // ============================================================================
 
-const OUTBOUND_SYSTEM_PROMPT = `You are CODEC, an advanced AI assistant making phone calls on behalf of users.
+const CHAT_SYSTEM_PROMPT = `You are CODEC, an AI assistant that helps users make phone calls. You chat with users to understand what they need, then make calls on their behalf.
 
-Personality:
-- Professional, friendly, and confident
-- Concise - keep responses to 1-2 sentences max
-- Adaptable to different situations
+YOUR CAPABILITIES:
+- Make phone calls to businesses (restaurants, hotels, services, etc.)
+- Book reservations, make inquiries, file complaints
+- Search for phone numbers if not provided
 
-Guidelines:
-- Greet appropriately based on context
-- State your purpose clearly and concisely
-- If the requested time isn't available, ask for alternatives
-- Confirm all details before ending
-- Handle being put on hold gracefully
-- If wrong number, apologize briefly and end
+CONVERSATION FLOW:
+1. Greet the user warmly
+2. Ask what they need help with
+3. Gather necessary details through natural conversation:
+   - What type of call (reservation, inquiry, etc.)
+   - Business name and location
+   - Date/time if applicable
+   - Party size if applicable
+   - Phone number (or you can search for it)
+   - Any special requests
+4. Confirm all details before making the call
+5. When ready, output a JSON block to trigger the call
 
-Remember: Be persistent but never rude. Represent the user professionally.`;
+RESPONSE FORMAT:
+- Be conversational, friendly, and helpful
+- Keep responses concise (2-3 sentences max)
+- Ask ONE question at a time
+- When you have all details and user confirms, output EXACTLY this JSON format on its own line:
 
-const getInboundSystemPrompt = (config) => `You are ${config.businessName}, an AI assistant answering incoming phone calls.
+{"action":"call","phone":"+61XXXXXXXXX","task":"reservation","business":"Business Name","details":"Party of 2, Friday 7pm, quiet table"}
 
-Your Purpose: ${config.purpose}
-
-Instructions: ${config.instructions}
-
-Guidelines:
-- Start with a warm greeting
-- Listen carefully to what the caller needs
-- Be helpful, professional, and concise
-- Keep responses to 1-2 sentences
-- If you can't help with something, politely explain and offer alternatives
-- Always be polite when ending the call
-
-Remember: You represent ${config.businessName}. Be professional and helpful.`;
+IMPORTANT:
+- Only output the JSON when you have ALL required info AND user confirms
+- Phone must be in international format (+61 for Australia)
+- If user provides phone, use it. Otherwise ask if they want you to search.
+- Be natural - don't sound robotic
+- If user asks something outside your capabilities, politely explain what you can do`;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -176,89 +178,59 @@ Remember: You represent ${config.businessName}. Be professional and helpful.`;
 async function searchWeb(query) {
     const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
     const engineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
-
-    if (!apiKey || !engineId) {
-        console.log('[SEARCH] Google Search not configured');
-        return { success: false, error: 'Search not configured' };
-    }
-
-    console.log(`[SEARCH] Query: ${query}`);
+    if (!apiKey || !engineId) return { success: false, error: 'Search not configured' };
 
     try {
         const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${engineId}&q=${encodeURIComponent(query)}&num=5`;
         const response = await fetch(url);
         const data = await response.json();
-
-        if (data.error) {
-            return { success: false, error: data.error.message };
-        }
-
         if (data.items?.length > 0) {
-            return {
-                success: true,
-                results: data.items.map(item => ({
-                    title: item.title,
-                    snippet: item.snippet,
-                    link: item.link
-                }))
-            };
+            return { success: true, results: data.items.map(item => ({ title: item.title, snippet: item.snippet, link: item.link })) };
         }
-
-        return { success: false, error: 'No results found' };
+        return { success: false, error: 'No results' };
     } catch (error) {
-        console.error('[SEARCH] Error:', error.message);
         return { success: false, error: error.message };
     }
 }
 
-async function findRestaurantPhone(businessName, location) {
-    const query = `${businessName} ${location} phone number contact`.trim();
+async function findPhoneNumber(businessName, location) {
+    const query = `${businessName} ${location} phone number`.trim();
     const result = await searchWeb(query);
-
     if (!result.success) return result;
 
-    const phonePatterns = [
-        /\+61\s?\d{1,2}\s?\d{4}\s?\d{4}/g,
-        /\(0\d\)\s?\d{4}\s?\d{4}/g,
-        /0\d\s?\d{4}\s?\d{4}/g,
-        /1[38]00\s?\d{3}\s?\d{3}/g,
-    ];
+    const phonePatterns = [/\+61\s?\d{1,2}\s?\d{4}\s?\d{4}/g, /\(0\d\)\s?\d{4}\s?\d{4}/g, /0\d\s?\d{4}\s?\d{4}/g];
 
     for (const item of result.results) {
         const text = `${item.title} ${item.snippet}`;
         for (const pattern of phonePatterns) {
             const matches = text.match(pattern);
             if (matches) {
-                const phone = matches[0].replace(/[\s\-\(\)]/g, '');
-                if (phone.length >= 8) {
-                    return { success: true, phone, source: item.title, restaurant: businessName };
-                }
+                let phone = matches[0].replace(/[\s\-\(\)]/g, '');
+                if (phone.startsWith('0')) phone = '+61' + phone.substring(1);
+                return { success: true, phone, source: item.title };
             }
         }
     }
-
-    return { success: false, error: 'Phone number not found' };
+    return { success: false, error: 'Phone not found' };
 }
 
-async function agentPlan(userRequest) {
-    console.log(`[AGENT] Planning: ${userRequest.substring(0, 100)}...`);
+async function chatWithGemini(conversationId, userMessage) {
+    // Get or create conversation
+    let conv = conversationState.get(conversationId);
+    if (!conv) {
+        conv = { messages: [], lastUpdate: Date.now(), callData: null };
+        conversationState.set(conversationId, conv);
+    }
 
-    const prompt = `Analyze this request and extract structured information.
+    // Add user message
+    conv.messages.push({ role: 'user', content: userMessage });
+    conv.lastUpdate = Date.now();
 
-Request: "${userRequest}"
-
-Respond ONLY with valid JSON (no markdown):
-{
-    "action": "reservation|inquiry|complaint|other",
-    "business_name": "name or null",
-    "location": "city/area or null",
-    "date_time": "when or null",
-    "party_size": number or null,
-    "special_requests": "notes or null",
-    "need_phone_search": true/false,
-    "ready_to_call": true/false,
-    "missing_info": []
-}`;
+    // Build conversation history for Gemini
+    const contents = conv.messages.map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }]
+    }));
 
     try {
         const response = await fetch(
@@ -267,205 +239,138 @@ Respond ONLY with valid JSON (no markdown):
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+                    contents,
+                    systemInstruction: { parts: [{ text: CHAT_SYSTEM_PROMPT }] },
+                    generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
                 })
             }
         );
 
         const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            return JSON.parse(jsonMatch[0]);
-        }
-    } catch (error) {
-        console.error('[AGENT] Planning error:', error.message);
-    }
+        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't process that. Could you try again?";
 
-    return { action: 'unknown', ready_to_call: false, missing_info: ['Could not parse request'] };
+        // Add AI response to conversation
+        conv.messages.push({ role: 'assistant', content: aiResponse });
+
+        // Check if AI wants to make a call (JSON in response)
+        const jsonMatch = aiResponse.match(/\{"action":"call"[^}]+\}/);
+        let callData = null;
+        if (jsonMatch) {
+            try {
+                callData = JSON.parse(jsonMatch[0]);
+                conv.callData = callData;
+            } catch (e) {
+                console.error('[CHAT] JSON parse error:', e);
+            }
+        }
+
+        return { response: aiResponse, callData };
+    } catch (error) {
+        console.error('[CHAT] Error:', error);
+        return { response: "Sorry, I encountered an error. Please try again.", callData: null };
+    }
 }
 
 async function getElevenLabsVoices() {
     const now = Date.now();
-
-    if (voicesCache && (now - voicesCacheTime) < VOICES_CACHE_TTL) {
-        return voicesCache;
-    }
+    if (voicesCache && (now - voicesCacheTime) < VOICES_CACHE_TTL) return voicesCache;
 
     try {
         const response = await fetch('https://api.elevenlabs.io/v1/voices', {
             headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY }
         });
-
         const data = await response.json();
-
         if (data.voices) {
             voicesCache = {
                 success: true,
                 voices: data.voices.map(v => ({
-                    voice_id: v.voice_id,
-                    name: v.name,
+                    voice_id: v.voice_id, name: v.name,
                     category: v.category || 'custom',
                     accent: v.labels?.accent || 'neutral',
-                    gender: v.labels?.gender || 'neutral',
-                    preview_url: v.preview_url
+                    gender: v.labels?.gender || 'neutral'
                 }))
             };
             voicesCacheTime = now;
-            console.log(`[VOICES] Cached ${voicesCache.voices.length} voices`);
             return voicesCache;
         }
     } catch (error) {
-        console.error('[VOICES] Fetch error:', error.message);
+        console.error('[VOICES] Error:', error.message);
     }
-
-    return { success: false, error: 'Failed to fetch voices' };
+    return { success: false };
 }
 
-// Default voices fallback
 const DEFAULT_VOICES = [
     { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' },
     { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', category: 'premade', accent: 'american', gender: 'female' },
-    { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi', category: 'premade', accent: 'american', gender: 'female' },
-    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', category: 'premade', accent: 'american', gender: 'female' },
     { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', category: 'premade', accent: 'american', gender: 'male' },
-    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', category: 'premade', accent: 'american', gender: 'male' },
     { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', category: 'premade', accent: 'american', gender: 'male' },
-    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', category: 'premade', accent: 'american', gender: 'male' }
 ];
 
 // ============================================================================
 // API ROUTES
 // ============================================================================
 
-// Root route
 app.get('/', (req, res) => {
-    res.json({
-        name: 'CODEC AI Caller',
-        version: '2.0.0',
-        status: 'running',
-        features: ['outbound_calls', 'inbound_calls', 'voice_selection', 'ai_planning'],
-        endpoints: {
-            health: 'GET /health',
-            voices: 'GET /api/voices',
-            plan: 'POST /api/agent/plan',
-            call: 'POST /api/call',
-            callStatus: 'GET /api/call/:callSid',
-            inboundConfig: 'GET/POST /api/inbound/config',
-            search: 'POST /api/search',
-            twilioVoice: 'POST /twilio/voice'
-        }
-    });
+    res.json({ name: 'CODEC AI Caller', version: '3.0.0', status: 'running' });
 });
 
 app.get('/health', (req, res) => {
+    res.json({ status: 'ok', activeCalls: callState.size, activeChats: conversationState.size });
+});
+
+// Chat endpoint - main conversational interface
+app.post('/api/chat', async (req, res) => {
+    const { conversationId, message } = req.body;
+    if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
+
+    const convId = conversationId || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const result = await chatWithGemini(convId, message);
+
     res.json({
-        status: 'ok',
-        service: 'CODEC AI Caller',
-        timestamp: new Date().toISOString(),
-        activeCalls: callState.size,
-        inboundEnabled: inboundConfig.enabled
+        conversationId: convId,
+        message: result.response,
+        callData: result.callData
     });
 });
 
-// Voices endpoint with fallback
-app.get('/api/voices', async (req, res) => {
-    try {
-        const result = await getElevenLabsVoices();
-        if (result.success) {
-            res.json(result);
-        } else {
-            res.json({ success: true, voices: DEFAULT_VOICES, fallback: true });
-        }
-    } catch (error) {
-        console.error('[API] Voices error:', error);
-        res.json({ success: true, voices: DEFAULT_VOICES, fallback: true });
-    }
+// Search for phone number
+app.post('/api/search-phone', async (req, res) => {
+    const { business, location } = req.body;
+    if (!business?.trim()) return res.status(400).json({ error: 'Business name required' });
+    res.json(await findPhoneNumber(business, location || ''));
 });
 
-// Inbound call configuration
+// Get voices
+app.get('/api/voices', async (req, res) => {
+    const result = await getElevenLabsVoices();
+    res.json(result.success ? result : { success: true, voices: DEFAULT_VOICES, fallback: true });
+});
+
+// Inbound config
 app.get('/api/inbound/config', (req, res) => {
     res.json({ success: true, config: inboundConfig });
 });
 
 app.post('/api/inbound/config', (req, res) => {
     const { enabled, greeting, businessName, purpose, instructions, voiceId } = req.body;
-
     if (typeof enabled === 'boolean') inboundConfig.enabled = enabled;
     if (greeting?.trim()) inboundConfig.greeting = greeting.trim();
     if (businessName?.trim()) inboundConfig.businessName = businessName.trim();
     if (purpose?.trim()) inboundConfig.purpose = purpose.trim();
     if (instructions?.trim()) inboundConfig.instructions = instructions.trim();
     if (voiceId?.trim()) inboundConfig.voiceId = voiceId.trim();
-
-    console.log('[CONFIG] Inbound config updated:', inboundConfig);
     res.json({ success: true, config: inboundConfig });
 });
 
-// AI Planning
-app.post('/api/agent/plan', async (req, res) => {
-    const { request } = req.body;
-
-    if (!request?.trim()) {
-        return res.status(400).json({ error: 'Request description required' });
-    }
-
-    try {
-        const plan = await agentPlan(request);
-
-        if (plan.need_phone_search && plan.business_name && process.env.GOOGLE_SEARCH_API_KEY) {
-            const phoneResult = await findRestaurantPhone(plan.business_name, plan.location || '');
-            if (phoneResult.success) {
-                plan.phone_number = phoneResult.phone;
-                plan.phone_source = phoneResult.source;
-                plan.ready_to_call = true;
-            } else {
-                plan.missing_info = plan.missing_info || [];
-                plan.missing_info.push('Phone number not found - please provide it');
-            }
-        }
-
-        res.json({ success: true, plan });
-    } catch (error) {
-        console.error('[API] Plan error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Search
-app.post('/api/search', async (req, res) => {
-    const { query } = req.body;
-    if (!query?.trim()) {
-        return res.status(400).json({ error: 'Search query required' });
-    }
-    res.json(await searchWeb(query));
-});
-
-// Find phone
-app.post('/api/find-phone', async (req, res) => {
-    const { business, location } = req.body;
-    if (!business?.trim()) {
-        return res.status(400).json({ error: 'Business name required' });
-    }
-    res.json(await findRestaurantPhone(business, location || ''));
-});
-
-// Initiate outbound call
+// Make call
 app.post('/api/call', async (req, res) => {
     const { phoneNumber, task, businessName, details, voiceId } = req.body;
-
-    if (!phoneNumber) {
-        return res.status(400).json({ error: 'Phone number required' });
-    }
+    if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
 
     try {
         const client = getTwilioClient();
         const serverDomain = process.env.SERVER_DOMAIN;
-
-        if (!serverDomain) {
-            return res.status(500).json({ error: 'SERVER_DOMAIN not configured' });
-        }
+        if (!serverDomain) return res.status(500).json({ error: 'SERVER_DOMAIN not configured' });
 
         const call = await client.calls.create({
             url: `https://${serverDomain}/twilio/voice?direction=outbound`,
@@ -485,7 +390,7 @@ app.post('/api/call', async (req, res) => {
             startTime: new Date().toISOString()
         });
 
-        console.log(`[CALL] Outbound initiated: ${call.sid} to ${phoneNumber}`);
+        console.log(`[CALL] Outbound: ${call.sid} to ${phoneNumber}`);
         res.json({ success: true, callSid: call.sid, status: 'initiated' });
     } catch (error) {
         console.error('[CALL] Error:', error);
@@ -495,28 +400,20 @@ app.post('/api/call', async (req, res) => {
 
 // Get call status
 app.get('/api/call/:callSid', async (req, res) => {
-    const { callSid } = req.params;
-    const state = callState.get(callSid);
-
-    if (!state) {
-        return res.status(404).json({ error: 'Call not found' });
-    }
+    const state = callState.get(req.params.callSid);
+    if (!state) return res.status(404).json({ error: 'Call not found' });
 
     if (!['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(state.status)) {
         try {
-            const client = getTwilioClient();
-            const call = await client.calls(callSid).fetch();
+            const call = await getTwilioClient().calls(req.params.callSid).fetch();
             state.status = call.status;
             state.duration = call.duration;
-        } catch (error) {
-            // Use cached state
-        }
+        } catch (e) {}
     }
-
-    res.json({ sid: callSid, ...state });
+    res.json({ sid: req.params.callSid, ...state });
 });
 
-// Get all active calls
+// Get all calls
 app.get('/api/calls', (req, res) => {
     const calls = [];
     for (const [sid, state] of callState.entries()) {
@@ -525,21 +422,21 @@ app.get('/api/calls', (req, res) => {
     res.json({ success: true, calls });
 });
 
+// Reset conversation
+app.post('/api/chat/reset', (req, res) => {
+    const { conversationId } = req.body;
+    if (conversationId) conversationState.delete(conversationId);
+    res.json({ success: true });
+});
+
 // ============================================================================
 // TWILIO WEBHOOKS
 // ============================================================================
 
-// GET handler for browser visits
 app.get('/twilio/voice', (req, res) => {
-    res.json({
-        endpoint: '/twilio/voice',
-        method: 'POST',
-        description: 'Twilio webhook for voice calls (inbound and outbound)',
-        inboundEnabled: inboundConfig.enabled
-    });
+    res.json({ endpoint: '/twilio/voice', method: 'POST' });
 });
 
-// Voice webhook - handles both inbound and outbound
 app.post('/twilio/voice', (req, res) => {
     const serverDomain = process.env.SERVER_DOMAIN;
     const direction = req.query.direction || 'inbound';
@@ -547,24 +444,16 @@ app.post('/twilio/voice', (req, res) => {
     const from = req.body.From;
     const to = req.body.To;
 
-    console.log(`[TWILIO] ${direction} call: ${callSid} from ${from} to ${to}`);
+    console.log(`[TWILIO] ${direction} call: ${callSid}`);
 
-    // For inbound calls, create state if not exists
     if (direction === 'inbound' && callSid && !callState.has(callSid)) {
         if (!inboundConfig.enabled) {
-            // Reject call if inbound is disabled
             res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Sorry, we are not accepting calls at this time. Please try again later.</Say>
-    <Hangup/>
-</Response>`);
+<Response><Say>Sorry, we are not accepting calls right now.</Say><Hangup/></Response>`);
             return;
         }
-
         callState.set(callSid, {
-            direction: 'inbound',
-            from: from,
-            to: to,
+            direction: 'inbound', from, to,
             task: inboundConfig.purpose,
             businessName: inboundConfig.businessName,
             details: inboundConfig.instructions,
@@ -573,10 +462,8 @@ app.post('/twilio/voice', (req, res) => {
             status: 'answered',
             startTime: new Date().toISOString()
         });
-        console.log(`[CALL] Inbound call registered: ${callSid} from ${from}`);
     }
 
-    // Connect to media stream
     res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
@@ -588,46 +475,52 @@ app.post('/twilio/voice', (req, res) => {
 </Response>`);
 });
 
-// Status callback
 app.post('/twilio/status', (req, res) => {
     const { CallSid, CallStatus, CallDuration } = req.body;
-
     if (CallSid && callState.has(CallSid)) {
         const state = callState.get(CallSid);
         state.status = CallStatus;
         if (CallDuration) state.duration = parseInt(CallDuration);
-
         if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(CallStatus)) {
             state.endTime = new Date().toISOString();
         }
-
         console.log(`[STATUS] ${CallSid}: ${CallStatus}`);
     }
-
     res.sendStatus(200);
 });
 
 // ============================================================================
-// HTTP & WEBSOCKET SERVER
+// WEBSOCKET SERVER
 // ============================================================================
 
 const server = app.listen(PORT, () => {
-    console.log(`
-╔═══════════════════════════════════════════════════════════╗
-║                    CODEC AI CALLER                         ║
-║                   Production Server                        ║
-╠═══════════════════════════════════════════════════════════╣
-║  HTTP:      http://0.0.0.0:${PORT}                           ║
-║  WebSocket: wss://SERVER_DOMAIN/ws/voice                   ║
-║  Inbound:   ${inboundConfig.enabled ? 'ENABLED' : 'DISABLED'}                                      ║
-╚═══════════════════════════════════════════════════════════╝
-`);
+    console.log(`[CODEC] Server running on port ${PORT}`);
 });
 
 const wss = new WebSocketServer({ server, path: '/ws/voice' });
 
-wss.on('connection', (twilioWs, req) => {
-    console.log('[WS] Twilio media stream connected');
+// Phone call system prompt
+const CALL_SYSTEM_PROMPT = `You are CODEC, an AI making a phone call. You are in a LIVE phone conversation.
+
+CRITICAL RULES:
+- Keep responses SHORT (1-2 sentences max)
+- Listen and respond naturally
+- Stay focused on your task
+- Be polite and professional
+- Confirm important details
+- Say goodbye politely when done`;
+
+const getInboundPrompt = (config) => `You are ${config.businessName}, answering a phone call.
+Purpose: ${config.purpose}
+Instructions: ${config.instructions}
+
+RULES:
+- Keep responses SHORT (1-2 sentences)
+- Be helpful and professional
+- Listen carefully to the caller`;
+
+wss.on('connection', (twilioWs) => {
+    console.log('[WS] Twilio connected');
 
     let callSid = null;
     let streamSid = null;
@@ -636,33 +529,27 @@ wss.on('connection', (twilioWs, req) => {
     let elevenLabsWs = null;
     let isGeminiReady = false;
     let currentVoiceId = process.env.ELEVENLABS_VOICE_ID;
-    let hasGreeted = false;
+    let conversationStarted = false;
 
-    // Audio buffer for batching
     let audioBuffer = [];
     let audioBufferTimer = null;
-    const AUDIO_BUFFER_MS = 100;
 
     const flushAudioBuffer = () => {
         if (audioBuffer.length === 0 || !geminiWs || !isGeminiReady) return;
-
         const combined = Buffer.concat(audioBuffer);
         audioBuffer = [];
 
         if (geminiWs.readyState === WebSocket.OPEN) {
             geminiWs.send(JSON.stringify({
                 realtimeInput: {
-                    mediaChunks: [{
-                        mimeType: "audio/pcm;rate=16000",
-                        data: combined.toString('base64')
-                    }]
+                    mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: combined.toString('base64') }]
                 }
             }));
         }
     };
 
     const setupGemini = (context, systemPrompt) => {
-        console.log(`[GEMINI] Connecting for ${direction} call...`);
+        console.log(`[GEMINI] Connecting...`);
         geminiWs = new WebSocket(GEMINI_WS_URL);
 
         geminiWs.on('open', () => {
@@ -670,15 +557,16 @@ wss.on('connection', (twilioWs, req) => {
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: `models/${GEMINI_MODEL}`,
-                    generationConfig: { responseModalities: ["TEXT"] },
-                    systemInstruction: {
-                        parts: [{ text: `${systemPrompt}\n\nContext: ${context}` }]
-                    }
+                    generationConfig: {
+                        responseModalities: ["AUDIO"],
+                        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } }
+                    },
+                    systemInstruction: { parts: [{ text: `${systemPrompt}\n\nContext: ${context}` }] }
                 }
             }));
         });
 
-        geminiWs.on('message', async (data) => {
+        geminiWs.on('message', (data) => {
             try {
                 const msg = JSON.parse(data.toString());
 
@@ -686,19 +574,20 @@ wss.on('connection', (twilioWs, req) => {
                     console.log('[GEMINI] Ready');
                     isGeminiReady = true;
 
-                    // For inbound calls, greet immediately
-                    // For outbound calls, wait for the other party to answer
-                    const state = callState.get(callSid);
-                    if (direction === 'inbound' && state?.greeting && !hasGreeted) {
-                        hasGreeted = true;
-                        sendToElevenLabs(state.greeting);
-                    } else if (direction === 'outbound') {
+                    if (!conversationStarted) {
+                        conversationStarted = true;
+                        const state = callState.get(callSid) || {};
+
+                        let startPrompt;
+                        if (direction === 'inbound') {
+                            startPrompt = `Say: "${state.greeting || inboundConfig.greeting}" Then listen.`;
+                        } else {
+                            startPrompt = `Call connected to ${state.businessName}. Task: ${state.task}. Details: ${state.details}. Greet them and state your purpose briefly.`;
+                        }
+
                         geminiWs.send(JSON.stringify({
                             clientContent: {
-                                turns: [{
-                                    role: "user",
-                                    parts: [{ text: "The call has connected. Begin the conversation appropriately." }]
-                                }],
+                                turns: [{ role: "user", parts: [{ text: startPrompt }] }],
                                 turnComplete: true
                             }
                         }));
@@ -706,33 +595,28 @@ wss.on('connection', (twilioWs, req) => {
                     return;
                 }
 
-                const parts = msg.serverContent?.modelTurn?.parts || [];
-                for (const part of parts) {
-                    if (part.text) {
-                        console.log(`[GEMINI ${direction}]:`, part.text);
-                        sendToElevenLabs(part.text);
+                // Handle responses
+                if (msg.serverContent?.modelTurn?.parts) {
+                    for (const part of msg.serverContent.modelTurn.parts) {
+                        if (part.text) {
+                            console.log(`[GEMINI] ${part.text}`);
+                            sendToElevenLabs(part.text);
+                        }
                     }
                 }
             } catch (e) {
-                console.error('[GEMINI] Parse error:', e.message);
+                console.error('[GEMINI] Error:', e.message);
             }
         });
 
         geminiWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
-        geminiWs.on('close', () => {
-            console.log('[GEMINI] Disconnected');
-            isGeminiReady = false;
-        });
+        geminiWs.on('close', () => { isGeminiReady = false; });
     };
 
     const setupElevenLabs = () => {
-        const voiceId = currentVoiceId;
-        const modelId = process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2';
-
-        console.log(`[11LABS] Connecting voice: ${voiceId}`);
-
+        console.log(`[11LABS] Connecting...`);
         elevenLabsWs = new WebSocket(
-            `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=ulaw_8000`,
+            `wss://api.elevenlabs.io/v1/text-to-speech/${currentVoiceId}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`,
             { headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY } }
         );
 
@@ -755,67 +639,54 @@ wss.on('connection', (twilioWs, req) => {
                         media: { payload: msg.audio }
                     }));
                 }
-            } catch (e) {
-                // Binary or non-JSON
-            }
+            } catch (e) {}
         });
 
         elevenLabsWs.on('error', (e) => console.error('[11LABS] Error:', e.message));
-        elevenLabsWs.on('close', () => console.log('[11LABS] Disconnected'));
     };
 
     const sendToElevenLabs = (text) => {
-        if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) return;
+        if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN || !text) return;
         elevenLabsWs.send(JSON.stringify({ text: text + " ", try_trigger_generation: true }));
         elevenLabsWs.send(JSON.stringify({ text: "" }));
     };
 
-    // Handle Twilio messages
     twilioWs.on('message', (message) => {
         try {
             const msg = JSON.parse(message);
 
             switch (msg.event) {
                 case 'start':
-                    console.log('[TWILIO] Stream started');
                     streamSid = msg.start.streamSid;
                     callSid = msg.start.callSid;
-
-                    // Get custom parameters
-                    const params = msg.start.customParameters || {};
-                    direction = params.direction || 'outbound';
+                    direction = msg.start.customParameters?.direction || 'outbound';
 
                     const state = callState.get(callSid) || {};
                     currentVoiceId = state.voiceId || process.env.ELEVENLABS_VOICE_ID;
 
-                    // Build context and system prompt based on direction
-                    let context, systemPrompt;
-                    if (direction === 'inbound') {
-                        context = `Inbound call. Caller: ${state.from || 'unknown'}. Purpose: ${state.task || inboundConfig.purpose}`;
-                        systemPrompt = getInboundSystemPrompt(state.businessName ? state : inboundConfig);
-                    } else {
-                        context = `${state.task || 'inquiry'} - ${state.businessName || 'business'}. ${state.details || ''}`;
-                        systemPrompt = OUTBOUND_SYSTEM_PROMPT;
-                    }
+                    const context = direction === 'inbound'
+                        ? `Inbound call from ${state.from || 'unknown'}`
+                        : `${state.task} for ${state.businessName}. ${state.details}`;
 
-                    setupGemini(context, systemPrompt);
+                    const prompt = direction === 'inbound'
+                        ? getInboundPrompt(state.businessName ? state : inboundConfig)
+                        : CALL_SYSTEM_PROMPT;
+
+                    setupGemini(context, prompt);
                     setupElevenLabs();
-
-                    audioBufferTimer = setInterval(flushAudioBuffer, AUDIO_BUFFER_MS);
+                    audioBufferTimer = setInterval(flushAudioBuffer, 100);
                     break;
 
                 case 'media':
-                    const pcm = mulawToPcm16(Buffer.from(msg.media.payload, 'base64'));
-                    audioBuffer.push(pcm);
+                    audioBuffer.push(mulawToPcm16(Buffer.from(msg.media.payload, 'base64')));
                     break;
 
                 case 'stop':
-                    console.log('[TWILIO] Stream stopped');
                     cleanup();
                     break;
             }
         } catch (e) {
-            console.error('[TWILIO] Message error:', e.message);
+            console.error('[TWILIO] Error:', e.message);
         }
     });
 
@@ -826,12 +697,8 @@ wss.on('connection', (twilioWs, req) => {
         audioBuffer = [];
     };
 
-    twilioWs.on('close', () => {
-        console.log('[TWILIO] Disconnected');
-        cleanup();
-    });
-
+    twilioWs.on('close', cleanup);
     twilioWs.on('error', (e) => console.error('[TWILIO] Error:', e.message));
 });
 
-console.log('[CODEC] Server initialized - Inbound & Outbound calls ready');
+console.log('[CODEC] Server initialized');
