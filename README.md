@@ -39,7 +39,11 @@ An intelligent AI caller that can make phone calls on your behalf. Just tell it 
 
 ## Quick Start
 
-### Option 1: Deploy to GCP (Recommended)
+### Option 1: Deploy to GCP with Terraform (Recommended)
+
+**Prerequisites:**
+- GCP account with billing enabled
+- `gcloud`, `terraform`, and `docker` installed
 
 ```bash
 # Clone and deploy
@@ -50,9 +54,13 @@ cd Codec
 
 The deployment script will:
 1. Prompt for all required API keys
-2. Store them securely in GCP Secret Manager
-3. Build and deploy to Cloud Run
-4. Provide you with the live URLs
+2. Create GCP infrastructure with Terraform:
+   - Secret Manager secrets for all credentials
+   - Cloud Run services for backend and frontend
+   - Service accounts with proper IAM roles
+3. Build and push Docker images
+4. Deploy to Cloud Run
+5. Output the live URLs and Twilio webhook configuration
 
 ### Option 2: Local Development
 
@@ -157,18 +165,26 @@ Automatic builds can be configured via:
 ```
 Codec/
 ├── backend/
-│   ├── server.js          # Main server with WebSocket handling
+│   ├── server.js           # Main server with WebSocket handling
 │   ├── Dockerfile          # Container configuration
+│   ├── .env.example        # Environment template
 │   └── package.json
 ├── frontend/
 │   ├── app/
-│   │   ├── page.tsx       # Main agentic UI
+│   │   ├── page.tsx        # Main agentic UI
 │   │   ├── layout.tsx
 │   │   └── globals.css
 │   ├── Dockerfile
 │   └── package.json
-├── cloudbuild.yaml         # GCP Cloud Build config
-├── deploy.sh              # One-click deployment script
+├── terraform/
+│   ├── main.tf             # Main Terraform config
+│   ├── variables.tf        # Variable definitions
+│   ├── secrets.tf          # Secret Manager resources
+│   ├── cloudrun.tf         # Cloud Run services
+│   ├── outputs.tf          # Output values
+│   └── terraform.tfvars.example
+├── cloudbuild.yaml         # GCP Cloud Build config (CI/CD)
+├── deploy.sh               # One-click deployment script
 └── README.md
 ```
 

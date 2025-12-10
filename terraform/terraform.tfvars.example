@@ -1,0 +1,24 @@
+# CODEC Terraform Variables
+# Copy this file to terraform.tfvars and fill in your values
+
+# GCP Project
+project_id = "your-gcp-project-id"
+region     = "australia-southeast1"
+
+# Twilio Credentials
+twilio_account_sid  = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+twilio_auth_token   = "your-twilio-auth-token"
+twilio_phone_number = "+1xxxxxxxxxx"
+
+# Gemini API
+gemini_api_key = "your-gemini-api-key"
+gemini_model   = "gemini-2.0-flash-exp"
+
+# ElevenLabs
+elevenlabs_api_key  = "your-elevenlabs-api-key"
+elevenlabs_voice_id = "EXAVITQu4vr4xnSDxMaL"  # Eric voice
+elevenlabs_model_id = "eleven_turbo_v2"
+
+# Google Custom Search (optional - for finding phone numbers)
+google_search_api_key   = "your-google-search-api-key"
+google_search_engine_id = "your-search-engine-id"

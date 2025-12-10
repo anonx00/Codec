@@ -1,193 +1,272 @@
 #!/bin/bash
-# CODEC AI Caller - GCP Deployment Script
-# This script sets up secrets and deploys the application to Cloud Run
+# CODEC AI Caller - GCP Deployment Script using Terraform
+# This script sets up infrastructure and deploys the application
 
 set -e
 
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║           CODEC AI CALLER - GCP DEPLOYMENT                ║"
+echo "║                  Using Terraform                          ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
-# Check if gcloud is installed
-if ! command -v gcloud &> /dev/null; then
-    echo "Error: gcloud CLI is not installed. Please install it first."
-    echo "Visit: https://cloud.google.com/sdk/docs/install"
-    exit 1
-fi
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Check if logged in
-if ! gcloud auth print-identity-token &> /dev/null; then
-    echo "Please log in to Google Cloud:"
+# Check prerequisites
+check_command() {
+    if ! command -v $1 &> /dev/null; then
+        echo -e "${RED}Error: $1 is not installed${NC}"
+        echo "Please install $1 first"
+        exit 1
+    fi
+}
+
+echo "Checking prerequisites..."
+check_command gcloud
+check_command terraform
+check_command docker
+
+# Check if logged in to GCP
+if ! gcloud auth print-identity-token &> /dev/null 2>&1; then
+    echo -e "${YELLOW}Please log in to Google Cloud:${NC}"
     gcloud auth login
+    gcloud auth application-default login
 fi
 
 # Get or set project
 echo ""
-echo "Current GCP projects:"
-gcloud projects list --format="table(projectId, name)" 2>/dev/null || true
+echo -e "${YELLOW}Available GCP projects:${NC}"
+gcloud projects list --format="table(projectId, name)" 2>/dev/null | head -10 || true
 
 echo ""
-read -p "Enter your GCP Project ID (or press Enter to create 'codec'): " PROJECT_ID
-PROJECT_ID=${PROJECT_ID:-codec}
+read -p "Enter your GCP Project ID: " PROJECT_ID
 
-# Check if project exists, if not create it
+if [ -z "$PROJECT_ID" ]; then
+    echo -e "${RED}Project ID is required${NC}"
+    exit 1
+fi
+
+# Verify project exists
 if ! gcloud projects describe "$PROJECT_ID" &> /dev/null; then
-    echo "Project '$PROJECT_ID' not found. Creating..."
-    gcloud projects create "$PROJECT_ID" --name="CODEC AI Caller"
+    echo -e "${YELLOW}Project '$PROJECT_ID' not found. Creating...${NC}"
+    gcloud projects create "$PROJECT_ID" --name="CODEC AI Caller" || {
+        echo -e "${RED}Failed to create project. Please create it manually.${NC}"
+        exit 1
+    }
 fi
 
 gcloud config set project "$PROJECT_ID"
-echo "Using project: $PROJECT_ID"
+echo -e "${GREEN}Using project: $PROJECT_ID${NC}"
 
-# Enable required APIs
+# Enable billing check
 echo ""
-echo "Enabling required GCP APIs..."
-gcloud services enable \
-    run.googleapis.com \
-    cloudbuild.googleapis.com \
-    secretmanager.googleapis.com \
-    containerregistry.googleapis.com \
-    --quiet
-
-echo "APIs enabled."
+echo -e "${YELLOW}Note: Make sure billing is enabled for project $PROJECT_ID${NC}"
+echo "Visit: https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT_ID"
+read -p "Press Enter to continue once billing is confirmed..."
 
 # Set region
 REGION="australia-southeast1"
 echo ""
-echo "Using region: $REGION (Australia)"
+echo -e "${GREEN}Using region: $REGION (Australia)${NC}"
 
 # Collect API credentials
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "                    API CREDENTIALS                         "
 echo "═══════════════════════════════════════════════════════════"
-echo ""
 
 # Twilio
-echo "TWILIO CONFIGURATION"
-echo "Get these from: https://console.twilio.com"
 echo ""
-read -p "Twilio Account SID: " TWILIO_ACCOUNT_SID
-read -sp "Twilio Auth Token: " TWILIO_AUTH_TOKEN
+echo -e "${YELLOW}TWILIO CONFIGURATION${NC}"
+echo "Get from: https://console.twilio.com"
+read -p "Twilio Account SID: " TWILIO_SID
+if [ -z "$TWILIO_SID" ]; then
+    echo -e "${RED}Twilio Account SID is required${NC}"
+    exit 1
+fi
+
+read -sp "Twilio Auth Token: " TWILIO_TOKEN
 echo ""
-read -p "Twilio Phone Number (e.g., +61876661130): " TWILIO_PHONE_NUMBER
-echo ""
+if [ -z "$TWILIO_TOKEN" ]; then
+    echo -e "${RED}Twilio Auth Token is required${NC}"
+    exit 1
+fi
+
+read -p "Twilio Phone Number (e.g., +14155551234): " TWILIO_PHONE
+if [ -z "$TWILIO_PHONE" ]; then
+    echo -e "${RED}Twilio Phone Number is required${NC}"
+    exit 1
+fi
 
 # Gemini
 echo ""
-echo "GEMINI API"
-echo "Get this from: https://aistudio.google.com/app/apikey"
+echo -e "${YELLOW}GEMINI API${NC}"
+echo "Get from: https://aistudio.google.com/app/apikey"
+read -sp "Gemini API Key: " GEMINI_KEY
 echo ""
-read -sp "Gemini API Key: " GEMINI_API_KEY
-echo ""
+if [ -z "$GEMINI_KEY" ]; then
+    echo -e "${RED}Gemini API Key is required${NC}"
+    exit 1
+fi
 
 # ElevenLabs
 echo ""
-echo "ELEVENLABS CONFIGURATION"
-echo "Get these from: https://elevenlabs.io -> Profile -> API Keys"
+echo -e "${YELLOW}ELEVENLABS CONFIGURATION${NC}"
+echo "Get from: https://elevenlabs.io -> Profile -> API Keys"
+read -sp "ElevenLabs API Key: " ELEVENLABS_KEY
 echo ""
-read -sp "ElevenLabs API Key: " ELEVENLABS_API_KEY
-echo ""
-read -p "ElevenLabs Voice ID (e.g., EXAVITQu4vr4xnSDxMaL for 'Eric'): " ELEVENLABS_VOICE_ID
-echo ""
+if [ -z "$ELEVENLABS_KEY" ]; then
+    echo -e "${RED}ElevenLabs API Key is required${NC}"
+    exit 1
+fi
+
+read -p "ElevenLabs Voice ID [EXAVITQu4vr4xnSDxMaL]: " ELEVENLABS_VOICE
+ELEVENLABS_VOICE=${ELEVENLABS_VOICE:-EXAVITQu4vr4xnSDxMaL}
 
 # Google Search (optional)
 echo ""
-echo "GOOGLE CUSTOM SEARCH (Optional - for finding phone numbers)"
-echo "Get these from: https://programmablesearchengine.google.com/"
-echo "Press Enter to skip if you don't have these."
+echo -e "${YELLOW}GOOGLE CUSTOM SEARCH (Optional)${NC}"
+echo "Get from: https://console.cloud.google.com/apis/credentials"
+echo "Press Enter to skip"
+read -sp "Google Search API Key: " GOOGLE_SEARCH_KEY
 echo ""
-read -sp "Google Search API Key (optional): " GOOGLE_SEARCH_API_KEY
-echo ""
-read -p "Google Search Engine ID (optional): " GOOGLE_SEARCH_ENGINE_ID
+read -p "Google Search Engine ID [3145e6eb05b6c4de8]: " GOOGLE_SEARCH_CX
+GOOGLE_SEARCH_CX=${GOOGLE_SEARCH_CX:-3145e6eb05b6c4de8}
 
-# Create secrets
+# Create terraform.tfvars
+echo ""
+echo -e "${GREEN}Creating Terraform configuration...${NC}"
+
+cd terraform
+
+cat > terraform.tfvars << EOF
+project_id = "$PROJECT_ID"
+region     = "$REGION"
+
+# Twilio
+twilio_account_sid  = "$TWILIO_SID"
+twilio_auth_token   = "$TWILIO_TOKEN"
+twilio_phone_number = "$TWILIO_PHONE"
+
+# Gemini
+gemini_api_key = "$GEMINI_KEY"
+
+# ElevenLabs
+elevenlabs_api_key  = "$ELEVENLABS_KEY"
+elevenlabs_voice_id = "$ELEVENLABS_VOICE"
+
+# Google Search
+google_search_api_key   = "$GOOGLE_SEARCH_KEY"
+google_search_engine_id = "$GOOGLE_SEARCH_CX"
+EOF
+
+echo -e "${GREEN}terraform.tfvars created${NC}"
+
+# Initialize and apply Terraform (first pass - just secrets and APIs)
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "                 CREATING SECRETS                           "
+echo "              INITIALIZING INFRASTRUCTURE                   "
 echo "═══════════════════════════════════════════════════════════"
+
+terraform init
+
+# Apply just the secrets first
+echo -e "${YELLOW}Creating secrets in Secret Manager...${NC}"
+terraform apply -target=google_project_service.apis -auto-approve
+terraform apply -target=google_service_account.codec_backend -auto-approve
+terraform apply -target=google_secret_manager_secret.twilio_account_sid -auto-approve
+terraform apply -target=google_secret_manager_secret.twilio_auth_token -auto-approve
+terraform apply -target=google_secret_manager_secret.twilio_phone_number -auto-approve
+terraform apply -target=google_secret_manager_secret.gemini_api_key -auto-approve
+terraform apply -target=google_secret_manager_secret.elevenlabs_api_key -auto-approve
+terraform apply -target=google_secret_manager_secret.elevenlabs_voice_id -auto-approve
+
+# Build and push Docker images
 echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "                 BUILDING DOCKER IMAGES                     "
+echo "═══════════════════════════════════════════════════════════"
 
-create_secret() {
-    local name=$1
-    local value=$2
+cd ..
 
-    if [ -z "$value" ]; then
-        echo "Skipping $name (empty value)"
-        return
-    fi
+# Configure Docker for GCR
+gcloud auth configure-docker gcr.io --quiet
 
-    # Delete if exists
-    gcloud secrets delete "$name" --quiet 2>/dev/null || true
+# Build backend
+echo -e "${YELLOW}Building backend...${NC}"
+docker build -t gcr.io/$PROJECT_ID/codec-backend:latest ./backend
+docker push gcr.io/$PROJECT_ID/codec-backend:latest
 
-    # Create new secret
-    echo -n "$value" | gcloud secrets create "$name" --data-file=- --quiet
-    echo "Created secret: $name"
+# Build frontend (need backend URL first, use placeholder)
+echo -e "${YELLOW}Building frontend...${NC}"
+docker build \
+    --build-arg NEXT_PUBLIC_API_URL=https://codec-backend-placeholder.run.app \
+    -t gcr.io/$PROJECT_ID/codec-frontend:latest \
+    ./frontend
+docker push gcr.io/$PROJECT_ID/codec-frontend:latest
 
-    # Grant access to Cloud Run service account
-    PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
-    gcloud secrets add-iam-policy-binding "$name" \
-        --member="serviceAccount:$PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
-        --role="roles/secretmanager.secretAccessor" \
+# Now apply full Terraform
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "                 DEPLOYING TO CLOUD RUN                     "
+echo "═══════════════════════════════════════════════════════════"
+
+cd terraform
+terraform apply -auto-approve
+
+# Get outputs
+BACKEND_URL=$(terraform output -raw backend_url 2>/dev/null || echo "")
+FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
+
+# Rebuild frontend with actual backend URL
+if [ -n "$BACKEND_URL" ]; then
+    echo ""
+    echo -e "${YELLOW}Rebuilding frontend with correct backend URL...${NC}"
+    cd ..
+    docker build \
+        --build-arg NEXT_PUBLIC_API_URL=$BACKEND_URL \
+        -t gcr.io/$PROJECT_ID/codec-frontend:latest \
+        ./frontend
+    docker push gcr.io/$PROJECT_ID/codec-frontend:latest
+
+    # Update Cloud Run
+    gcloud run deploy codec-frontend \
+        --image gcr.io/$PROJECT_ID/codec-frontend:latest \
+        --region $REGION \
+        --set-env-vars "NEXT_PUBLIC_API_URL=$BACKEND_URL" \
         --quiet
-}
 
-create_secret "twilio-account-sid" "$TWILIO_ACCOUNT_SID"
-create_secret "twilio-auth-token" "$TWILIO_AUTH_TOKEN"
-create_secret "twilio-phone-number" "$TWILIO_PHONE_NUMBER"
-create_secret "gemini-api-key" "$GEMINI_API_KEY"
-create_secret "elevenlabs-api-key" "$ELEVENLABS_API_KEY"
-create_secret "elevenlabs-voice-id" "$ELEVENLABS_VOICE_ID"
-create_secret "google-search-api-key" "${GOOGLE_SEARCH_API_KEY:-none}"
-create_secret "google-search-engine-id" "${GOOGLE_SEARCH_ENGINE_ID:-none}"
+    # Get final frontend URL
+    FRONTEND_URL=$(gcloud run services describe codec-frontend --region=$REGION --format='value(status.url)')
+fi
 
-echo ""
-echo "All secrets created."
-
-# Deploy using Cloud Build
+# Print final output
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "                   DEPLOYING APPLICATION                    "
+echo -e "${GREEN}            DEPLOYMENT COMPLETE!${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-
-# Grant Cloud Build permission to deploy to Cloud Run
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
-    --role="roles/run.admin" \
-    --quiet
-
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
-    --role="roles/iam.serviceAccountUser" \
-    --quiet
-
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
-    --role="roles/secretmanager.secretAccessor" \
-    --quiet
-
-echo "Starting Cloud Build deployment..."
-gcloud builds submit --config=cloudbuild.yaml .
-
-# Get deployed URLs
+echo -e "Frontend URL: ${GREEN}$FRONTEND_URL${NC}"
+echo -e "Backend URL:  ${GREEN}$BACKEND_URL${NC}"
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo "                  DEPLOYMENT COMPLETE!                      "
+echo -e "${YELLOW}IMPORTANT: Configure Twilio Webhook${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-
-BACKEND_URL=$(gcloud run services describe codec-backend --region=$REGION --format='value(status.url)' 2>/dev/null || echo "Pending...")
-FRONTEND_URL=$(gcloud run services describe codec-frontend --region=$REGION --format='value(status.url)' 2>/dev/null || echo "Pending...")
-
-echo "Backend URL:  $BACKEND_URL"
-echo "Frontend URL: $FRONTEND_URL"
+echo "1. Go to: https://console.twilio.com"
+echo "2. Navigate to: Phone Numbers -> Manage -> Active Numbers"
+echo "3. Click on: $TWILIO_PHONE"
+echo "4. Under 'Voice Configuration', set:"
 echo ""
-echo "IMPORTANT: Update your Twilio webhook URL to:"
-echo "  Voice URL: $BACKEND_URL/twilio/voice"
+echo -e "   Webhook URL: ${GREEN}$BACKEND_URL/twilio/voice${NC}"
+echo "   Method: POST"
 echo ""
-echo "You can do this at: https://console.twilio.com -> Phone Numbers -> Your Number"
+echo "5. Save the configuration"
 echo ""
-echo "Enjoy using CODEC!"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
+echo -e "${GREEN}You can now open the Frontend URL and start making calls!${NC}"
