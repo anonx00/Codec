@@ -297,7 +297,16 @@ app.post('/twilio/voice', (req, res) => {
         });
     }
 
-    res.type('text/xml').send(`<?xml version="1.0"?><Response><Connect><Stream url="wss://${domain}/ws/voice"><Parameter name="direction" value="${dir}"/><Parameter name="callSid" value="${sid}"/></Stream></Connect></Response>`);
+    // Get call state for greeting
+    const state = callState.get(sid) || {};
+
+    // Immediate Australian voice greeting while Gemini connects
+    // Then seamlessly hand off to WebSocket stream
+    const immediateGreeting = dir === 'inbound'
+        ? "G'day, thanks for calling!"
+        : `Hey there! This is ${state.callerName || 'Alex'} calling.`;
+
+    res.type('text/xml').send(`<?xml version="1.0"?><Response><Say voice="alice" language="en-AU">${immediateGreeting}</Say><Connect><Stream url="wss://${domain}/ws/voice"><Parameter name="direction" value="${dir}"/><Parameter name="callSid" value="${sid}"/></Stream></Connect></Response>`);
 });
 
 app.post('/twilio/status', (req, res) => {
