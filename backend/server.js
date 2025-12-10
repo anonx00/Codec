@@ -114,13 +114,22 @@ function mulawToPcm16k(mulaw) {
     return Buffer.from(pcm.buffer);
 }
 
-// Fast PCM 24kHz -> mu-law 8kHz
+// PCM 24kHz -> mu-law 8kHz with proper low-pass filtering to prevent aliasing/static
 function pcm24kToMulaw8k(pcmBuffer) {
-    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
-    const len = Math.floor(samples.length / 3);
-    const mulaw = Buffer.alloc(len);
-    for (let i = 0; i < len; i++) {
-        mulaw[i] = MULAW_ENCODE[samples[i * 3] + 32768];
+    const src = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
+    const destLen = Math.floor(src.length / 3);
+    const mulaw = Buffer.alloc(destLen);
+
+    for (let i = 0; i < destLen; i++) {
+        const srcIdx = i * 3;
+        // Average 3 samples (simple low-pass filter) to prevent aliasing
+        const s1 = src[srcIdx] || 0;
+        const s2 = src[srcIdx + 1] || 0;
+        const s3 = src[srcIdx + 2] || 0;
+        const avg = Math.round((s1 + s2 + s3) / 3);
+
+        // Convert averaged sample to mu-law
+        mulaw[i] = MULAW_ENCODE[avg + 32768];
     }
     return mulaw;
 }
