@@ -1,91 +1,89 @@
-# CODEC - AI Caller Prototype
+# CODEC - Agentic AI Caller
 
-A real-time AI caller that can phone restaurants and negotiate reservations using **Gemini Multimodal Live API** for ultra-low latency audio processing.
+An intelligent AI caller that can make phone calls on your behalf. Just tell it what you need, and CODEC will find the phone number, plan the call, and handle the conversation.
+
+## Features
+
+- **Agentic AI**: Describe what you want in natural language
+- **Auto Phone Lookup**: Automatically finds phone numbers via web search
+- **Voice Selection**: Choose from multiple ElevenLabs voices and accents
+- **Real-time Conversation**: Powered by Gemini's Multimodal Live API
+- **Smart Planning**: Reviews the call plan before dialing
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Frontend  │────▶│  Node.js    │────▶│   Twilio    │────▶ Phone Call
-│  (Next.js)  │     │  Server     │◀────│  (Media     │
-└─────────────┘     └──────┬──────┘     │  Streams)   │
-                           │            └─────────────┘
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-              ▼                         ▼
-       ┌─────────────┐          ┌─────────────┐
-       │   Gemini    │          │  ElevenLabs │
-       │  Live API   │          │    TTS      │
-       │ (Listens)   │          │  (Speaks)   │
-       └─────────────┘          └─────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                         CODEC System                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   User: "Book a table at Luigi's for 2 people Friday 7pm"       │
+│                           ↓                                      │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                    AGENT PLANNER                         │   │
+│   │  • Parse user intent                                     │   │
+│   │  • Search web for phone number                           │   │
+│   │  • Create call plan                                      │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                           ↓                                      │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                    CALL ENGINE                           │   │
+│   │                                                          │   │
+│   │  Twilio ←──→ Node.js ←──→ Gemini (Listens + Thinks)     │   │
+│   │                  ↓                                       │   │
+│   │            ElevenLabs (Speaks)                           │   │
+│   └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Flow
-1. **User** clicks "Call" → Frontend triggers backend
-2. **Twilio** dials the number and opens WebSocket to server
-3. **Audio In**: Twilio → Server → Gemini (processes speech natively)
-4. **AI Response**: Gemini generates text response
-5. **Audio Out**: Text → ElevenLabs → Twilio → Human hears it
+## Quick Start
 
-### Why This Stack?
+### Option 1: Deploy to GCP with Terraform (Recommended)
 
-| Component | Role | Why |
-|-----------|------|-----|
-| **Gemini 2.0 Flash** | Listens + Thinks | Native audio understanding, <500ms latency, built-in VAD |
-| **ElevenLabs** | Speaks | High-quality, natural voices with streaming TTS |
-| **Twilio** | Telephony | Reliable media streams, global phone coverage |
+**Prerequisites:**
+- GCP account with billing enabled
+- `gcloud`, `terraform`, and `docker` installed
 
-## Setup
+```bash
+# Clone and deploy
+git clone <repo>
+cd Codec
+./deploy.sh
+```
 
-### Prerequisites
+The deployment script will:
+1. Prompt for all required API keys
+2. Create GCP infrastructure with Terraform:
+   - Secret Manager secrets for all credentials
+   - Cloud Run services for backend and frontend
+   - Service accounts with proper IAM roles
+3. Build and push Docker images
+4. Deploy to Cloud Run
+5. Output the live URLs and Twilio webhook configuration
+
+### Option 2: Local Development
+
+#### Prerequisites
 - Node.js 18+
-- Twilio account with phone number
-- Google Cloud / AI Studio account (for Gemini API)
-- ElevenLabs account
-- ngrok (for local development)
+- ngrok account
+- API keys (see below)
 
-### 1. Backend Setup
-
+#### Backend Setup
 ```bash
 cd backend
 npm install
 cp .env.example .env
 # Edit .env with your credentials
-```
 
-### 2. Get Your API Keys
-
-**Twilio:**
-- Account SID & Auth Token: https://console.twilio.com
-- Phone Number: Buy one in the console
-
-**Gemini API:**
-- Get API key: https://aistudio.google.com/app/apikey
-- Or use Vertex AI in GCP
-
-**ElevenLabs:**
-- API Key: https://elevenlabs.io → Profile → API Keys
-- Voice ID: VoiceLab → Select voice → Copy ID from URL
-
-### 3. Expose Local Server
-
-```bash
-# Terminal 1: Start ngrok
+# Start ngrok
 ngrok http 8080
+# Copy the ngrok URL to SERVER_DOMAIN in .env
 
-# Copy the https URL (e.g., https://abc123.ngrok-free.app)
-# Update SERVER_DOMAIN in .env (without https://)
-```
-
-### 4. Run the Server
-
-```bash
 npm run dev
 ```
 
-### 5. Frontend Setup
-
+#### Frontend Setup
 ```bash
 cd frontend
 npm install
@@ -93,18 +91,22 @@ npm run dev
 # Open http://localhost:3000
 ```
 
-## Configuration
+## Required API Keys
 
-Edit `backend/.env`:
+| Service | Purpose | Get It From |
+|---------|---------|-------------|
+| **Twilio** | Phone calls | https://console.twilio.com |
+| **Gemini** | AI brain | https://aistudio.google.com/app/apikey |
+| **ElevenLabs** | Voice synthesis | https://elevenlabs.io → Profile → API Keys |
+| **Google Search** (optional) | Find phone numbers | https://programmablesearchengine.google.com |
+
+## Environment Variables
 
 ```env
-PORT=8080
-SERVER_DOMAIN=your-ngrok-url.ngrok-free.app
-
 # Twilio
 TWILIO_ACCOUNT_SID=AC...
 TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=+1234567890
+TWILIO_PHONE_NUMBER=+61876661130
 
 # Gemini
 GEMINI_API_KEY=...
@@ -114,27 +116,93 @@ GEMINI_MODEL=gemini-2.0-flash-exp
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=...
 ELEVENLABS_MODEL_ID=eleven_turbo_v2
+
+# Google Search (optional)
+GOOGLE_SEARCH_API_KEY=...
+GOOGLE_SEARCH_ENGINE_ID=...
+
+# Server
+PORT=8080
+SERVER_DOMAIN=your-domain.run.app
 ```
 
-## Making a Test Call
+## API Endpoints
 
-1. On Twilio Trial, verify your phone number first
-2. Enter your phone number in the dashboard
-3. Click "Call Now"
-4. Answer and talk to CODEC!
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/voices` | GET | List available ElevenLabs voices |
+| `/api/agent/plan` | POST | AI analyzes request and creates call plan |
+| `/api/search` | POST | Web search |
+| `/api/find-phone` | POST | Find business phone number |
+| `/api/call` | POST | Initiate a phone call |
+| `/api/call/:sid` | GET | Get call status |
 
-## Technical Notes
+## How It Works
 
-### Audio Format Conversion
-- **Twilio** uses 8kHz mu-law audio
-- **Gemini** expects 16kHz PCM
-- Server handles conversion both ways
+1. **User Input**: Describe what you want in natural language
+2. **AI Planning**: Gemini analyzes your request, extracts details
+3. **Phone Lookup**: Searches the web for the business phone number
+4. **Plan Review**: Shows you the plan before calling
+5. **Make Call**: Twilio dials, Gemini listens and responds
+6. **Voice Output**: ElevenLabs speaks with your chosen voice
 
-### Latency Optimization
-- Gemini processes audio natively (no separate STT)
-- ElevenLabs `eleven_turbo_v2` model for fast TTS
-- Direct `ulaw_8000` output format matches Twilio (no transcoding)
+## CI/CD
 
-### Interruption Handling
-- Gemini's Live API has built-in Voice Activity Detection
-- Naturally handles turn-taking and interruptions
+The project includes a `cloudbuild.yaml` for automatic deployments:
+
+```bash
+# Trigger a build manually
+gcloud builds submit --config=cloudbuild.yaml .
+```
+
+Automatic builds can be configured via:
+- Cloud Build triggers on Git push
+- GitHub Actions (add workflow file)
+
+## Project Structure
+
+```
+Codec/
+├── backend/
+│   ├── server.js           # Main server with WebSocket handling
+│   ├── Dockerfile          # Container configuration
+│   ├── .env.example        # Environment template
+│   └── package.json
+├── frontend/
+│   ├── app/
+│   │   ├── page.tsx        # Main agentic UI
+│   │   ├── layout.tsx
+│   │   └── globals.css
+│   ├── Dockerfile
+│   └── package.json
+├── terraform/
+│   ├── main.tf             # Main Terraform config
+│   ├── variables.tf        # Variable definitions
+│   ├── secrets.tf          # Secret Manager resources
+│   ├── cloudrun.tf         # Cloud Run services
+│   ├── outputs.tf          # Output values
+│   └── terraform.tfvars.example
+├── cloudbuild.yaml         # GCP Cloud Build config (CI/CD)
+├── deploy.sh               # One-click deployment script
+└── README.md
+```
+
+## Troubleshooting
+
+### "Audio sounds like static"
+- Check audio format conversion (mu-law ↔ PCM)
+- Verify sample rates match (8kHz for Twilio, 16kHz for Gemini)
+
+### "Call connects but no audio"
+- Verify SERVER_DOMAIN is set correctly
+- Check WebSocket connection in browser console
+- Ensure ngrok/Cloud Run URL is accessible
+
+### "Phone number not found"
+- Provide a more specific location
+- Enter the phone number manually
+
+## License
+
+MIT
