@@ -261,9 +261,7 @@ async function preEstablishGemini(sessionId, state) {
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            // Faster response - lower thresholds
-                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH"
+                            // Use defaults - custom sensitivity not supported in Vertex AI
                         }
                     }
                 }
@@ -700,10 +698,7 @@ wss.on('connection', (twilioWs) => {
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
-                        automaticActivityDetection: {
-                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH"
-                        }
+                        automaticActivityDetection: {}
                     }
                 }
             }));
