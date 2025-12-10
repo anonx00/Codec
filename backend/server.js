@@ -66,14 +66,35 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Live API model for real-time voice calls (Google AI Studio)
-// Using gemini-2.0-flash-exp which supports Live API via v1alpha
-const GEMINI_LIVE_MODEL = 'gemini-2.0-flash-exp';
-// Standard model for text chat (REST API)
+const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'codec-480810';
+
+// Vertex AI Native Audio model (only in us-central1)
+const VERTEX_REGION = 'us-central1';
+const GEMINI_LIVE_MODEL = 'gemini-live-2.5-flash-preview-native-audio-09-2025';
+
+// Standard model for text chat (REST API with API key)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
-// Live API WebSocket endpoint (v1alpha required for BidiGenerateContent)
-const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
+
+// Get access token from GCP metadata server (for Vertex AI)
+async function getAccessToken() {
+    try {
+        const response = await fetch(
+            'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+            { headers: { 'Metadata-Flavor': 'Google' } }
+        );
+        const data = await response.json();
+        return data.access_token;
+    } catch (e) {
+        console.error('[AUTH] Failed to get access token:', e.message);
+        return null;
+    }
+}
+
+// Build Vertex AI WebSocket URL
+function getVertexWsUrl(accessToken) {
+    return `wss://${VERTEX_REGION}-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent?access_token=${accessToken}`;
+}
 
 // ============================================================================
 // AUDIO CONVERSION (Optimized)
@@ -148,20 +169,29 @@ function pcm24kToMulaw8k(pcmBuffer) {
 }
 
 // ============================================================================
-// PRE-ESTABLISH GEMINI SESSION
+// PRE-ESTABLISH GEMINI SESSION (Vertex AI)
 // ============================================================================
 
-function preEstablishGemini(sessionId, state) {
+async function preEstablishGemini(sessionId, state) {
+    // Get access token for Vertex AI
+    console.log(`[GEMINI] Getting access token for ${sessionId}...`);
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+        throw new Error('Failed to get GCP access token');
+    }
+
+    const wsUrl = getVertexWsUrl(accessToken);
+    console.log(`[GEMINI] Connecting to Vertex AI Live API for ${sessionId}...`);
+
     return new Promise((resolve, reject) => {
-        console.log(`[GEMINI] Connecting to Live API for ${sessionId}...`);
-        const geminiWs = new WebSocket(GEMINI_WS_URL);
+        const geminiWs = new WebSocket(wsUrl);
 
         const timeout = setTimeout(() => {
             console.error(`[GEMINI] Connection timeout for ${sessionId}`);
             geminiWs.close();
             pendingGeminiSessions.delete(sessionId);
             reject(new Error('Gemini connection timeout'));
-        }, 15000); // Increased to 15 seconds
+        }, 15000);
 
         geminiWs.on('open', () => {
             console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup...`);
@@ -171,9 +201,12 @@ function preEstablishGemini(sessionId, state) {
                 ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
                 : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
 
+            // Vertex AI model path format
+            const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
+
             const setupMsg = {
                 setup: {
-                    model: `models/${GEMINI_LIVE_MODEL}`,
+                    model: modelPath,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
@@ -187,7 +220,7 @@ function preEstablishGemini(sessionId, state) {
                 }
             };
 
-            console.log(`[GEMINI] Setup msg: model=${GEMINI_LIVE_MODEL}`);
+            console.log(`[GEMINI] Setup msg: model=${modelPath}`);
             geminiWs.send(JSON.stringify(setupMsg));
         });
 
@@ -493,21 +526,32 @@ wss.on('connection', (twilioWs) => {
     };
 
     // Fallback: create Gemini on-the-fly if no pre-established session
-    const startGeminiFallback = (state) => {
-        console.log('[GEMINI] No pre-established session, creating new one...');
-        geminiWs = new WebSocket(GEMINI_WS_URL);
+    const startGeminiFallback = async (state) => {
+        console.log('[GEMINI] No pre-established session, creating new one via Vertex AI...');
+
+        // Get access token for Vertex AI
+        const accessToken = await getAccessToken();
+        if (!accessToken) {
+            console.error('[GEMINI] Failed to get access token for fallback');
+            return;
+        }
+
+        const wsUrl = getVertexWsUrl(accessToken);
+        geminiWs = new WebSocket(wsUrl);
 
         geminiWs.on('open', () => {
-            console.log('[GEMINI] Fallback connected');
+            console.log('[GEMINI] Fallback connected to Vertex AI');
 
             const prompt = direction === 'inbound'
                 ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
                 : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
 
-            // Live API config - simple and reliable
+            // Vertex AI model path format
+            const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
+
             geminiWs.send(JSON.stringify({
                 setup: {
-                    model: `models/${GEMINI_LIVE_MODEL}`,
+                    model: modelPath,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
@@ -624,4 +668,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.6 Ready - Live API with Enhanced Logging');
+console.log('[CODEC] v5.7 Ready - Vertex AI Native Audio (us-central1)');
