@@ -60,9 +60,8 @@ resource "google_project_iam_member" "secret_accessor" {
   member  = "serviceAccount:${local.service_account_email}"
 }
 
-# Grant Vertex AI User access for native audio model
+# Grant Vertex AI User access for native audio model (ALWAYS apply - needed for Live API)
 resource "google_project_iam_member" "vertex_ai_user" {
-  count   = var.existing_service_account_email == "" ? 1 : 0
   project = var.project_id
   role    = "roles/aiplatform.user"
   member  = "serviceAccount:${local.service_account_email}"
