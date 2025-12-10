@@ -66,11 +66,12 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Live API model for real-time voice calls
-const GEMINI_LIVE_MODEL = 'gemini-2.0-flash-live-001';
+// Live API model for real-time voice calls (Google AI Studio)
+// Using gemini-2.0-flash-exp which supports Live API via v1alpha
+const GEMINI_LIVE_MODEL = 'gemini-2.0-flash-exp';
 // Standard model for text chat (REST API)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
-// Use v1alpha for live API
+// Live API WebSocket endpoint (v1alpha required for BidiGenerateContent)
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -152,24 +153,25 @@ function pcm24kToMulaw8k(pcmBuffer) {
 
 function preEstablishGemini(sessionId, state) {
     return new Promise((resolve, reject) => {
+        console.log(`[GEMINI] Connecting to Live API for ${sessionId}...`);
         const geminiWs = new WebSocket(GEMINI_WS_URL);
 
         const timeout = setTimeout(() => {
+            console.error(`[GEMINI] Connection timeout for ${sessionId}`);
             geminiWs.close();
             pendingGeminiSessions.delete(sessionId);
             reject(new Error('Gemini connection timeout'));
-        }, 10000);
+        }, 15000); // Increased to 15 seconds
 
         geminiWs.on('open', () => {
-            console.log(`[GEMINI] Pre-establishing for ${sessionId}`);
+            console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup...`);
 
             // Build prompt - natural phone conversation
             const prompt = state.direction === 'inbound'
                 ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
                 : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
 
-            // Live API config - keep it simple and reliable
-            geminiWs.send(JSON.stringify({
+            const setupMsg = {
                 setup: {
                     model: `models/${GEMINI_LIVE_MODEL}`,
                     generationConfig: {
@@ -183,15 +185,20 @@ function preEstablishGemini(sessionId, state) {
                         automaticActivityDetection: {}
                     }
                 }
-            }));
+            };
+
+            console.log(`[GEMINI] Setup msg: model=${GEMINI_LIVE_MODEL}`);
+            geminiWs.send(JSON.stringify(setupMsg));
         });
 
         geminiWs.on('message', (data) => {
             try {
                 const msg = JSON.parse(data.toString());
+                console.log(`[GEMINI] Received:`, Object.keys(msg));
+
                 if (msg.setupComplete) {
                     clearTimeout(timeout);
-                    console.log(`[GEMINI] Pre-established and ready for ${sessionId}`);
+                    console.log(`[GEMINI] Setup complete for ${sessionId}`);
 
                     // Store the ready session
                     pendingGeminiSessions.set(sessionId, {
@@ -203,13 +210,27 @@ function preEstablishGemini(sessionId, state) {
 
                     resolve(geminiWs);
                 }
-            } catch (e) {}
+
+                // Log any errors from Gemini
+                if (msg.error) {
+                    console.error(`[GEMINI] Error:`, msg.error);
+                    clearTimeout(timeout);
+                    reject(new Error(msg.error.message || 'Gemini error'));
+                }
+            } catch (e) {
+                console.error(`[GEMINI] Parse error:`, e.message);
+            }
         });
 
         geminiWs.on('error', (e) => {
+            console.error(`[GEMINI] WebSocket error for ${sessionId}:`, e.message);
             clearTimeout(timeout);
             pendingGeminiSessions.delete(sessionId);
             reject(e);
+        });
+
+        geminiWs.on('close', (code, reason) => {
+            console.log(`[GEMINI] WebSocket closed for ${sessionId}: ${code} ${reason}`);
         });
     });
 }
@@ -603,4 +624,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.5 Ready - Live API with Pre-established Sessions');
+console.log('[CODEC] v5.6 Ready - Live API with Enhanced Logging');
