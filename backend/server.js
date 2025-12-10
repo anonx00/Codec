@@ -34,6 +34,7 @@ const getTwilioClient = () => {
 const callState = new Map();
 const conversationState = new Map();
 const pendingGeminiSessions = new Map(); // Pre-established Gemini connections
+const callTranscripts = new Map(); // Store call transcripts
 
 let inboundConfig = {
     enabled: true,
@@ -43,11 +44,14 @@ let inboundConfig = {
     instructions: "Be helpful and concise."
 };
 
-// Cleanup old calls and stale Gemini sessions
+// Cleanup old calls, transcripts and stale Gemini sessions
 setInterval(() => {
     const now = Date.now();
     for (const [k, v] of callState.entries()) {
-        if (now - new Date(v.startTime).getTime() > 30 * 60 * 1000) callState.delete(k);
+        if (now - new Date(v.startTime).getTime() > 60 * 60 * 1000) {
+            callState.delete(k);
+            callTranscripts.delete(k);
+        }
     }
     for (const [k, v] of conversationState.entries()) {
         if (now - v.lastUpdate > 30 * 60 * 1000) conversationState.delete(k);
@@ -172,6 +176,47 @@ function pcm24kToMulaw8k(pcmBuffer) {
 // PRE-ESTABLISH GEMINI SESSION (Vertex AI)
 // ============================================================================
 
+// Build voice AI prompt with full context
+function buildVoicePrompt(state) {
+    if (state.direction === 'inbound') {
+        return `You're answering a phone call for ${state.businessName}.
+
+GREETING: "${state.greeting}"
+
+PURPOSE: ${state.task || 'general assistance'}
+
+INSTRUCTIONS: ${state.details || 'Be helpful and concise.'}
+
+STYLE:
+- Speak naturally with a calm, friendly Australian accent
+- Keep responses brief (1-2 sentences)
+- Listen actively and respond appropriately
+- Be warm and professional`;
+    }
+
+    // Outbound call - agentic
+    return `You are an AI assistant making a phone call on behalf of a user.
+
+CALLING: ${state.businessName || 'Unknown'}
+PURPOSE: ${state.task || 'general inquiry'}
+DETAILS: ${state.details || 'No additional details'}
+YOUR NAME: ${state.callerName || 'Alex'}
+
+INSTRUCTIONS:
+1. Start with "Hey! This is ${state.callerName || 'Alex'} calling"
+2. Briefly explain why you're calling
+3. Accomplish the task (make reservation, ask questions, etc.)
+4. Be polite, natural, and conversational
+5. Keep responses short (1-2 sentences)
+6. Thank them and say goodbye when done
+
+STYLE:
+- Speak with a calm, friendly Australian accent
+- Be conversational, not robotic
+- React naturally to what they say
+- If they ask questions, answer helpfully`;
+}
+
 async function preEstablishGemini(sessionId, state) {
     // Get access token for Vertex AI
     console.log(`[GEMINI] Getting access token for ${sessionId}...`);
@@ -182,6 +227,9 @@ async function preEstablishGemini(sessionId, state) {
 
     const wsUrl = getVertexWsUrl(accessToken);
     console.log(`[GEMINI] Connecting to Vertex AI Live API for ${sessionId}...`);
+
+    // Initialize transcript for this session
+    callTranscripts.set(sessionId, []);
 
     return new Promise((resolve, reject) => {
         const geminiWs = new WebSocket(wsUrl);
@@ -196,10 +244,7 @@ async function preEstablishGemini(sessionId, state) {
         geminiWs.on('open', () => {
             console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup...`);
 
-            // Build prompt - natural phone conversation
-            const prompt = state.direction === 'inbound'
-                ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
-                : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
+            const prompt = buildVoicePrompt(state);
 
             // Vertex AI model path format
             const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
@@ -215,7 +260,11 @@ async function preEstablishGemini(sessionId, state) {
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
-                        automaticActivityDetection: {}
+                        automaticActivityDetection: {
+                            // Faster response - lower thresholds
+                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH"
+                        }
                     }
                 }
             };
@@ -269,14 +318,47 @@ async function preEstablishGemini(sessionId, state) {
 }
 
 // ============================================================================
-// CHAT (Web UI)
+// CHAT (Web UI) - With Google Search for finding businesses/numbers
 // ============================================================================
 
-const CHAT_PROMPT = `You are CODEC, an AI phone assistant. Help users make calls to anyone.
+const CHAT_PROMPT = `You are CODEC, an agentic AI phone assistant that makes calls on behalf of users.
 
-When ready to call, output: {"action":"call","phone":"+XXX","task":"why","business":"who","details":"info"}
+CAPABILITIES:
+- Make phone calls to anyone (restaurants, businesses, friends, services)
+- Search the web to find phone numbers and business info
+- Handle any calling task: reservations, inquiries, appointments, etc.
 
-Be casual and friendly. No restrictions on who they can call.`;
+WHEN USER WANTS TO CALL:
+1. If they provide a phone number, use it
+2. If they mention a business/restaurant name, search for its phone number
+3. Ask for any missing details needed for the call
+
+OUTPUT FORMAT - When ready to call, output this JSON (no markdown):
+{"action":"call","phone":"+XXX","task":"brief task description","business":"name","details":"all relevant context"}
+
+IMPORTANT:
+- Always include full international phone number with country code
+- The "details" field should contain EVERYTHING the AI caller needs to know
+- Be conversational and helpful
+- If searching, tell the user what you found`;
+
+// Google Search helper for finding business numbers
+async function searchWeb(query) {
+    const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
+    const cx = process.env.GOOGLE_SEARCH_ENGINE_ID;
+    if (!apiKey || !cx) return null;
+
+    try {
+        const r = await fetch(`https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}&num=3`);
+        const d = await r.json();
+        if (d.items?.length) {
+            return d.items.map(i => `${i.title}: ${i.snippet}`).join('\n\n');
+        }
+    } catch (e) {
+        console.error('[SEARCH] Error:', e.message);
+    }
+    return null;
+}
 
 async function chat(convId, msg) {
     let conv = conversationState.get(convId);
@@ -288,25 +370,60 @@ async function chat(convId, msg) {
     conv.lastUpdate = Date.now();
 
     try {
+        // Check if user is asking about a business - do a search
+        let searchContext = '';
+        const needsSearch = /phone|number|call|book|reserve|contact/i.test(msg) &&
+                          /restaurant|cafe|shop|store|business|hotel|clinic|doctor/i.test(msg);
+
+        if (needsSearch) {
+            const searchResults = await searchWeb(`${msg} phone number contact`);
+            if (searchResults) {
+                searchContext = `\n\n[Search Results]\n${searchResults}`;
+            }
+        }
+
+        const messagesWithContext = [...conv.messages];
+        if (searchContext) {
+            messagesWithContext[messagesWithContext.length - 1] = {
+                role: 'user',
+                content: msg + searchContext
+            };
+        }
+
         const r = await fetch(`${GEMINI_REST_URL}/models/${GEMINI_CHAT_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: conv.messages.map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] })),
+                contents: messagesWithContext.map(m => ({
+                    role: m.role === 'user' ? 'user' : 'model',
+                    parts: [{ text: m.content }]
+                })),
                 systemInstruction: { parts: [{ text: CHAT_PROMPT }] },
-                generationConfig: { temperature: 0.7, maxOutputTokens: 300 }
+                generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
             })
         });
         const d = await r.json();
         const text = d.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, try again.";
         conv.messages.push({ role: 'assistant', content: text });
 
-        const jsonMatch = text.match(/\{"action":"call"[^}]+\}/);
+        // Extract call data - handle various JSON formats
         let callData = null;
-        if (jsonMatch) try { callData = JSON.parse(jsonMatch[0]); } catch {}
+        const jsonMatch = text.match(/\{"action"\s*:\s*"call"[\s\S]*?\}/);
+        if (jsonMatch) {
+            try {
+                callData = JSON.parse(jsonMatch[0]);
+            } catch {
+                // Try to extract fields manually
+                const phone = text.match(/["']phone["']\s*:\s*["']([^"']+)["']/)?.[1];
+                const task = text.match(/["']task["']\s*:\s*["']([^"']+)["']/)?.[1];
+                const business = text.match(/["']business["']\s*:\s*["']([^"']+)["']/)?.[1];
+                if (phone) callData = { action: 'call', phone, task: task || '', business: business || '' };
+            }
+        }
 
         return { response: text, callData };
     } catch (e) {
+        console.error('[CHAT] Error:', e.message);
         return { response: "Error occurred.", callData: null };
     }
 }
@@ -315,7 +432,7 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.7', mode: 'Vertex AI Native Audio' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.8', mode: 'Vertex AI Native Audio + Agentic' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size }));
 
 app.post('/api/chat', async (req, res) => {
@@ -415,7 +532,9 @@ app.get('/api/call/:sid', async (req, res) => {
             s.duration = c.duration;
         } catch {}
     }
-    res.json({ sid: req.params.sid, ...s });
+    // Include transcript if available
+    const transcript = callTranscripts.get(req.params.sid) || [];
+    res.json({ sid: req.params.sid, ...s, transcript });
 });
 
 app.get('/api/calls', (_, res) => {
@@ -487,6 +606,15 @@ wss.on('connection', (twilioWs) => {
     let geminiWs = null;
     let ready = false;
 
+    // Helper to add to transcript
+    const addToTranscript = (speaker, text) => {
+        if (callSid && text) {
+            const transcript = callTranscripts.get(callSid) || [];
+            transcript.push({ speaker, text, time: new Date().toISOString() });
+            callTranscripts.set(callSid, transcript);
+        }
+    };
+
     // Wire up Gemini message handler to stream audio to Twilio
     const wireGeminiToTwilio = (gWs) => {
         gWs.on('message', (data) => {
@@ -499,9 +627,14 @@ wss.on('connection', (twilioWs) => {
                     return;
                 }
 
-                // Stream audio to Twilio
+                // Capture transcript from text parts
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
+                        // Capture text for transcript
+                        if (part.text) {
+                            addToTranscript('AI', part.text);
+                        }
+                        // Stream audio to Twilio
                         if (part.inlineData?.data) {
                             const pcm = Buffer.from(part.inlineData.data, 'base64');
                             const mulaw = pcm24kToMulaw8k(pcm);
@@ -516,6 +649,11 @@ wss.on('connection', (twilioWs) => {
                         }
                     }
                 }
+
+                // Capture user speech transcript if available
+                if (msg.serverContent?.inputTranscript) {
+                    addToTranscript('User', msg.serverContent.inputTranscript);
+                }
             } catch (e) {
                 console.error('[GEMINI] Parse error:', e.message);
             }
@@ -528,6 +666,9 @@ wss.on('connection', (twilioWs) => {
     // Fallback: create Gemini on-the-fly if no pre-established session
     const startGeminiFallback = async (state) => {
         console.log('[GEMINI] No pre-established session, creating new one via Vertex AI...');
+
+        // Initialize transcript
+        if (callSid) callTranscripts.set(callSid, []);
 
         // Get access token for Vertex AI
         const accessToken = await getAccessToken();
@@ -542,9 +683,8 @@ wss.on('connection', (twilioWs) => {
         geminiWs.on('open', () => {
             console.log('[GEMINI] Fallback connected to Vertex AI');
 
-            const prompt = direction === 'inbound'
-                ? `You're answering a phone call for ${state.businessName}. Greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
-                : `You're making a phone call to ${state.businessName} about: ${state.task}. Say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short and conversational.`;
+            // Use the improved prompt builder
+            const prompt = buildVoicePrompt({ ...state, direction });
 
             // Vertex AI model path format
             const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
@@ -560,7 +700,10 @@ wss.on('connection', (twilioWs) => {
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
-                        automaticActivityDetection: {}
+                        automaticActivityDetection: {
+                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH"
+                        }
                     }
                 }
             }));
@@ -587,9 +730,12 @@ wss.on('connection', (twilioWs) => {
                     return;
                 }
 
-                // Stream audio to Twilio
+                // Capture transcript and stream audio
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
+                        if (part.text) {
+                            addToTranscript('AI', part.text);
+                        }
                         if (part.inlineData?.data) {
                             const pcm = Buffer.from(part.inlineData.data, 'base64');
                             const mulaw = pcm24kToMulaw8k(pcm);
@@ -603,6 +749,11 @@ wss.on('connection', (twilioWs) => {
                             }
                         }
                     }
+                }
+
+                // Capture user speech
+                if (msg.serverContent?.inputTranscript) {
+                    addToTranscript('User', msg.serverContent.inputTranscript);
                 }
             } catch (e) {
                 console.error('[GEMINI] Parse error:', e.message);
@@ -668,4 +819,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.7 Ready - Vertex AI Native Audio (us-central1)');
+console.log('[CODEC] v5.8 Ready - Enhanced Agentic Voice + Transcript');

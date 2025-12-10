@@ -36,6 +36,17 @@ interface InboundConfig {
 
 type View = 'chat' | 'calling' | 'settings';
 
+// Simple markdown renderer for **bold** text
+function renderMarkdown(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
 export default function Home() {
   const [view, setView] = useState<View>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -84,12 +95,25 @@ export default function Home() {
           if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(data.status)) {
             clearInterval(interval);
             setTimeout(() => {
+              // Build transcript summary if available
+              let summary = data.status === 'completed'
+                ? `Call completed! Duration: ${data.duration || 0} seconds.`
+                : `Call ended: ${data.status}.`;
+
+              // Add transcript if available
+              if (data.transcript && data.transcript.length > 0) {
+                summary += '\n\n📝 **Call Summary:**\n';
+                data.transcript.forEach((t: { speaker: string; text: string }) => {
+                  summary += `**${t.speaker}:** ${t.text}\n`;
+                });
+              }
+
+              summary += '\nAnything else?';
+
               setMessages(prev => [...prev, {
                 id: `call-done-${Date.now()}`,
                 role: 'system',
-                content: data.status === 'completed'
-                  ? `Call completed! Duration: ${data.duration || 0} seconds. Anything else?`
-                  : `Call ended: ${data.status}. Want me to try again?`,
+                content: summary,
                 timestamp: new Date()
               }]);
               setView('chat');
@@ -448,7 +472,7 @@ export default function Home() {
                       : 'bg-slate-800 text-white'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                  <p className="whitespace-pre-wrap">{renderMarkdown(msg.content)}</p>
 
                   {msg.callData && (
                     <div className="mt-3 p-3 bg-slate-900/50 rounded-lg border border-slate-600">
