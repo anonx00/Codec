@@ -27,6 +27,7 @@ output "project_number" {
 
 output "instructions" {
   description = "Post-deployment instructions"
+  sensitive   = true
   value       = <<-EOT
 
     ╔═══════════════════════════════════════════════════════════════╗
