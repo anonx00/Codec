@@ -54,7 +54,7 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // ============================================================================
-// GEMINI CONFIG
+// CONFIG
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -62,11 +62,13 @@ const GEMINI_MODEL = 'gemini-2.0-flash-exp';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const DEFAULT_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL';
+
 // ============================================================================
-// AUDIO CONVERSION - Bidirectional
+// AUDIO CONVERSION
 // ============================================================================
 
-// mu-law decode table
 const MULAW_DECODE = new Int16Array([
     -32124,-31100,-30076,-29052,-28028,-27004,-25980,-24956,-23932,-22908,-21884,-20860,-19836,-18812,-17788,-16764,
     -15996,-15484,-14972,-14460,-13948,-13436,-12924,-12412,-11900,-11388,-10876,-10364,-9852,-9340,-8828,-8316,
@@ -86,28 +88,12 @@ const MULAW_DECODE = new Int16Array([
     120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,0
 ]);
 
-// mu-law encode table (PCM to mu-law)
-function linearToMulaw(sample) {
-    const MULAW_MAX = 0x1FFF;
-    const MULAW_BIAS = 33;
-    let sign = (sample >> 8) & 0x80;
-    if (sign) sample = -sample;
-    if (sample > MULAW_MAX) sample = MULAW_MAX;
-    sample += MULAW_BIAS;
-    let exponent = 7;
-    for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) {}
-    let mantissa = (sample >> (exponent + 3)) & 0x0F;
-    let mulaw = ~(sign | (exponent << 4) | mantissa);
-    return mulaw & 0xFF;
-}
-
-// Convert Twilio mu-law 8kHz to PCM 16kHz for Gemini
+// Twilio mu-law 8kHz -> PCM 16kHz for Gemini
 function mulawToPcm16k(mulaw) {
     const pcm8k = new Int16Array(mulaw.length);
     for (let i = 0; i < mulaw.length; i++) {
         pcm8k[i] = MULAW_DECODE[mulaw[i]];
     }
-    // Upsample 8kHz to 16kHz (simple linear interpolation)
     const pcm16k = new Int16Array(pcm8k.length * 2);
     for (let i = 0; i < pcm8k.length - 1; i++) {
         pcm16k[i * 2] = pcm8k[i];
@@ -116,18 +102,6 @@ function mulawToPcm16k(mulaw) {
     pcm16k[pcm16k.length - 2] = pcm8k[pcm8k.length - 1];
     pcm16k[pcm16k.length - 1] = pcm8k[pcm8k.length - 1];
     return Buffer.from(pcm16k.buffer);
-}
-
-// Convert Gemini PCM 24kHz to Twilio mu-law 8kHz
-function pcm24kToMulaw8k(pcmBuffer) {
-    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
-    // Downsample 24kHz to 8kHz (take every 3rd sample)
-    const outputLength = Math.floor(samples.length / 3);
-    const mulaw = Buffer.alloc(outputLength);
-    for (let i = 0; i < outputLength; i++) {
-        mulaw[i] = linearToMulaw(samples[i * 3]);
-    }
-    return mulaw;
 }
 
 // ============================================================================
@@ -201,7 +175,7 @@ async function getVoices() {
     if (voicesCache && Date.now() - voicesCacheTime < 3600000) return voicesCache;
     try {
         const r = await fetch('https://api.elevenlabs.io/v1/voices', {
-            headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY }
+            headers: { 'xi-api-key': ELEVENLABS_API_KEY }
         });
         const d = await r.json();
         if (d.voices) {
@@ -217,7 +191,7 @@ async function getVoices() {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '4.0' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '4.1', mode: 'Gemini TEXT + ElevenLabs TTS' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size }));
 
 app.post('/api/chat', async (req, res) => {
@@ -268,8 +242,8 @@ app.post('/api/call', async (req, res) => {
             task: task || 'have a conversation',
             businessName: businessName || 'Someone',
             details: details || '',
-            callerName: callerName || 'your assistant',
-            voiceId: voiceId || process.env.ELEVENLABS_VOICE_ID,
+            callerName: callerName || 'Alex',
+            voiceId: voiceId || DEFAULT_VOICE_ID,
             status: 'initiated',
             startTime: new Date().toISOString()
         });
@@ -280,7 +254,6 @@ app.post('/api/call', async (req, res) => {
     }
 });
 
-// TERMINATE CALL
 app.post('/api/call/:sid/hangup', async (req, res) => {
     try {
         await getTwilioClient().calls(req.params.sid).update({ status: 'completed' });
@@ -310,6 +283,34 @@ app.get('/api/calls', (_, res) => {
     const calls = [];
     for (const [sid, s] of callState.entries()) calls.push({ sid, ...s });
     res.json({ success: true, calls });
+});
+
+// ============================================================================
+// ELEVENLABS WEBHOOK (for future use - transcription notifications etc)
+// ============================================================================
+
+app.post('/webhook/elevenlabs', (req, res) => {
+    // ElevenLabs can send webhooks for:
+    // - voice_removal_notice: when a voice is scheduled for removal
+    // - transcription_completed: when speech-to-text finishes
+
+    const { type, data } = req.body;
+    console.log(`[ELEVENLABS WEBHOOK] ${type}:`, data);
+
+    // Handle different webhook types
+    switch (type) {
+        case 'transcription_completed':
+            // Could use this for call transcripts
+            console.log('[ELEVENLABS] Transcription ready:', data);
+            break;
+        case 'voice_removal_notice':
+            console.log('[ELEVENLABS] Voice being removed:', data);
+            break;
+        default:
+            console.log('[ELEVENLABS] Unknown webhook type:', type);
+    }
+
+    res.json({ received: true });
 });
 
 // ============================================================================
@@ -358,7 +359,8 @@ app.post('/twilio/status', (req, res) => {
 });
 
 // ============================================================================
-// WEBSOCKET - REAL-TIME PHONE CALLS (Gemini Native Audio)
+// WEBSOCKET - REAL-TIME CALLS
+// Architecture: Twilio <-> Server <-> Gemini (TEXT) + ElevenLabs (TTS)
 // ============================================================================
 
 const server = app.listen(PORT, () => console.log(`[CODEC] Running on ${PORT}`));
@@ -368,69 +370,140 @@ wss.on('connection', (twilioWs) => {
     console.log('[WS] Twilio connected');
 
     let callSid = null, streamSid = null, direction = 'outbound';
-    let geminiWs = null;
-    let isReady = false;
+    let geminiWs = null, elevenLabsWs = null;
+    let voiceId = DEFAULT_VOICE_ID;
+    let isGeminiReady = false;
+    let isSpeaking = false;
+    let pendingText = '';
 
+    // ========== ELEVENLABS TTS ==========
+    const connectElevenLabs = () => {
+        console.log(`[11LABS] Connecting with voice: ${voiceId}`);
+
+        elevenLabsWs = new WebSocket(
+            `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=eleven_turbo_v2_5&output_format=ulaw_8000`,
+            { headers: { 'xi-api-key': ELEVENLABS_API_KEY } }
+        );
+
+        elevenLabsWs.on('open', () => {
+            console.log('[11LABS] Connected');
+            // Initialize the stream
+            elevenLabsWs.send(JSON.stringify({
+                text: " ",
+                voice_settings: { stability: 0.5, similarity_boost: 0.8, use_speaker_boost: true },
+                generation_config: { chunk_length_schedule: [120, 160, 250, 290] },
+                xi_api_key: ELEVENLABS_API_KEY
+            }));
+        });
+
+        elevenLabsWs.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+
+                // Audio chunk from ElevenLabs -> send to Twilio
+                if (msg.audio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                    twilioWs.send(JSON.stringify({
+                        event: 'media',
+                        streamSid,
+                        media: { payload: msg.audio }
+                    }));
+                }
+
+                // Check if generation is complete
+                if (msg.isFinal) {
+                    console.log('[11LABS] Speech complete');
+                    setTimeout(() => { isSpeaking = false; }, 300);
+                }
+            } catch (e) {
+                // Binary audio data - ignore
+            }
+        });
+
+        elevenLabsWs.on('error', (e) => console.error('[11LABS] Error:', e.message));
+        elevenLabsWs.on('close', () => {
+            console.log('[11LABS] Disconnected');
+            // Reconnect if call still active
+            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                setTimeout(connectElevenLabs, 500);
+            }
+        });
+    };
+
+    const speak = (text) => {
+        if (!text?.trim()) return;
+        if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) {
+            pendingText += text + ' ';
+            return;
+        }
+
+        isSpeaking = true;
+        console.log(`[SPEAK] "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"`);
+
+        // Send text to ElevenLabs for TTS
+        elevenLabsWs.send(JSON.stringify({
+            text: text + ' ',
+            try_trigger_generation: true
+        }));
+
+        // Flush to ensure generation starts
+        elevenLabsWs.send(JSON.stringify({ text: '' }));
+    };
+
+    // ========== GEMINI AI ==========
     const connectGemini = (state) => {
-        console.log('[GEMINI] Connecting for real-time audio...');
+        console.log('[GEMINI] Connecting...');
         geminiWs = new WebSocket(GEMINI_WS_URL);
 
         geminiWs.on('open', () => {
             console.log('[GEMINI] Connected');
 
-            // Build context-aware prompt
+            // Build the system prompt based on direction
             let systemPrompt;
 
             if (direction === 'inbound') {
                 systemPrompt = `You are answering a phone call for ${state.businessName || 'a business'}.
 
-YOUR OPENING: Say exactly this greeting: "${state.greeting || 'Hello, how can I help you?'}"
+FIRST THING TO SAY (your greeting):
+"${state.greeting || 'Hello, how can I help you today?'}"
 
-THEN: Have a natural conversation. ${state.details || 'Be helpful and professional.'}
+YOUR ROLE: ${state.details || 'Be helpful and assist the caller.'}
 
-VOICE STYLE:
-- Sound like a real person, warm and friendly
-- Use natural pauses, "um", "let me check" etc
+CONVERSATION RULES:
+- After greeting, LISTEN and respond naturally
 - Keep responses SHORT - 1-2 sentences max
-- Listen more than you talk`;
+- Sound human and friendly, not robotic
+- Use casual language: "sure", "got it", "no problem"
+- If you don't understand, ask them to repeat
+- When done, say goodbye politely`;
             } else {
-                // OUTBOUND - This is the key fix!
-                systemPrompt = `You are making a phone call on behalf of someone.
+                // OUTBOUND CALL - AI introduces itself
+                systemPrompt = `You are making a phone call on someone's behalf.
 
-WHO YOU ARE: You're ${state.callerName || 'an assistant'} calling about: ${state.task}
-
-WHO YOU'RE CALLING: ${state.businessName || 'Someone'}
-
-YOUR OPENING (say this FIRST when they answer):
-"Hey! This is ${state.callerName || 'calling'} - I'm reaching out about ${state.task}. Is this a good time to chat for a sec?"
-
-THEN: Have a natural conversation to accomplish the task.
+YOUR NAME: ${state.callerName || 'Alex'}
+CALLING: ${state.businessName || 'someone'}
+PURPOSE: ${state.task || 'have a conversation'}
 ${state.details ? `DETAILS: ${state.details}` : ''}
 
-VOICE STYLE:
-- Sound like a REAL person - warm, casual, friendly
-- Use filler words naturally: "um", "so", "yeah", "like"
-- Keep responses SHORT - 1-2 sentences
-- React naturally to what they say
-- If they seem busy, offer to call back
-- Be polite but not robotic
+FIRST THING TO SAY (when they answer):
+"Hey! This is ${state.callerName || 'Alex'}. I'm calling about ${state.task || 'something quick'}. Do you have a moment?"
 
-IMPORTANT: Start speaking as soon as you're connected. Don't wait.`;
+CONVERSATION RULES:
+- Wait for them to respond after your greeting
+- Keep responses SHORT - 1-2 sentences
+- Sound natural and human, use "um", "so", "yeah" naturally
+- LISTEN to what they say and respond appropriately
+- If they're busy, offer to call back later
+- Stay focused on your purpose
+- When done, thank them and say goodbye`;
             }
 
-            // Setup with AUDIO response for real-time
+            // Setup Gemini with TEXT response (we'll use ElevenLabs for voice)
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: `models/${GEMINI_MODEL}`,
                     generationConfig: {
-                        responseModalities: ["AUDIO"],
-                        speechConfig: {
-                            voiceConfig: {
-                                prebuiltVoiceConfig: {
-                                    voiceName: "Aoede"  // Natural sounding voice
-                                }
-                            }
-                        }
+                        responseModalities: ["TEXT"],
+                        temperature: 0.9
                     },
                     systemInstruction: { parts: [{ text: systemPrompt }] }
                 }
@@ -441,68 +514,59 @@ IMPORTANT: Start speaking as soon as you're connected. Don't wait.`;
             try {
                 const msg = JSON.parse(data.toString());
 
+                // Setup complete - start the conversation
                 if (msg.setupComplete) {
-                    console.log('[GEMINI] Setup complete - starting conversation');
-                    isReady = true;
+                    console.log('[GEMINI] Ready');
+                    isGeminiReady = true;
 
-                    // Trigger initial response - tell Gemini to start talking
-                    geminiWs.send(JSON.stringify({
-                        clientContent: {
-                            turns: [{
-                                role: "user",
-                                parts: [{ text: "The call is connected. Start with your opening greeting now." }]
-                            }],
-                            turnComplete: true
+                    // Connect ElevenLabs now
+                    connectElevenLabs();
+
+                    // Tell Gemini to start talking (it will say the greeting)
+                    setTimeout(() => {
+                        if (geminiWs?.readyState === WebSocket.OPEN) {
+                            geminiWs.send(JSON.stringify({
+                                clientContent: {
+                                    turns: [{
+                                        role: "user",
+                                        parts: [{ text: "The call is connected. Say your opening greeting now." }]
+                                    }],
+                                    turnComplete: true
+                                }
+                            }));
                         }
-                    }));
+                    }, 500);
                     return;
                 }
 
-                // Handle audio response from Gemini
+                // Text response from Gemini -> send to ElevenLabs
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
-                        if (part.inlineData?.mimeType?.includes('audio') && part.inlineData?.data) {
-                            // Convert Gemini's PCM 24kHz to Twilio's mu-law 8kHz
-                            const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
-                            const mulawBuffer = pcm24kToMulaw8k(pcmBuffer);
-
-                            // Send to Twilio in chunks
-                            const chunkSize = 640; // ~80ms of audio
-                            for (let i = 0; i < mulawBuffer.length; i += chunkSize) {
-                                const chunk = mulawBuffer.slice(i, i + chunkSize);
-                                if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
-                                    twilioWs.send(JSON.stringify({
-                                        event: 'media',
-                                        streamSid,
-                                        media: { payload: chunk.toString('base64') }
-                                    }));
-                                }
-                            }
-                        }
-
-                        // Log any text for debugging
                         if (part.text) {
-                            console.log(`[GEMINI] Text: "${part.text.substring(0, 100)}..."`);
+                            console.log(`[GEMINI] "${part.text}"`);
+                            speak(part.text);
                         }
                     }
                 }
 
+                // Turn complete - Gemini is done speaking, ready to listen
                 if (msg.serverContent?.turnComplete) {
-                    console.log('[GEMINI] Turn complete');
+                    console.log('[GEMINI] Turn complete, listening...');
                 }
 
             } catch (e) {
-                console.error('[GEMINI] Parse error:', e.message);
+                console.error('[GEMINI] Error:', e.message);
             }
         });
 
         geminiWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
         geminiWs.on('close', () => {
             console.log('[GEMINI] Disconnected');
-            isReady = false;
+            isGeminiReady = false;
         });
     };
 
+    // ========== TWILIO MEDIA STREAM ==========
     twilioWs.on('message', (message) => {
         try {
             const msg = JSON.parse(message);
@@ -514,19 +578,26 @@ IMPORTANT: Start speaking as soon as you're connected. Don't wait.`;
                     direction = msg.start.customParameters?.direction || 'outbound';
 
                     const state = callState.get(callSid) || {};
-                    console.log(`[CALL] Started: ${callSid} (${direction}) - Task: ${state.task}`);
+                    voiceId = state.voiceId || DEFAULT_VOICE_ID;
+
+                    console.log(`[CALL] Started: ${callSid} (${direction})`);
+                    console.log(`[CALL] Task: ${state.task}, Business: ${state.businessName}`);
 
                     connectGemini(state);
                     break;
 
                 case 'media':
-                    if (!isReady || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+                    // Only send audio to Gemini if it's ready and AI isn't speaking
+                    if (!isGeminiReady || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
 
-                    // Convert incoming mu-law to PCM and send to Gemini
+                    // Don't process while AI is speaking (prevents echo)
+                    if (isSpeaking) return;
+
+                    // Convert Twilio mu-law to PCM for Gemini
                     const mulawData = Buffer.from(msg.media.payload, 'base64');
                     const pcmData = mulawToPcm16k(mulawData);
 
-                    // Stream audio to Gemini in real-time
+                    // Stream to Gemini for real-time understanding
                     geminiWs.send(JSON.stringify({
                         realtimeInput: {
                             mediaChunks: [{
@@ -548,18 +619,13 @@ IMPORTANT: Start speaking as soon as you're connected. Don't wait.`;
     });
 
     const cleanup = () => {
-        if (geminiWs) {
-            geminiWs.close();
-            geminiWs = null;
-        }
+        if (geminiWs) { geminiWs.close(); geminiWs = null; }
+        if (elevenLabsWs) { elevenLabsWs.close(); elevenLabsWs = null; }
     };
 
-    twilioWs.on('close', () => {
-        console.log('[WS] Twilio disconnected');
-        cleanup();
-    });
-
+    twilioWs.on('close', () => { console.log('[WS] Twilio disconnected'); cleanup(); });
     twilioWs.on('error', (e) => console.error('[WS] Error:', e.message));
 });
 
-console.log('[CODEC] Server v4.0 initialized - Real-time Audio Mode');
+console.log('[CODEC] Server v4.1 initialized');
+console.log('[CODEC] Mode: Gemini (understanding) + ElevenLabs (voice)');
