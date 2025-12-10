@@ -125,42 +125,42 @@ resource "google_secret_manager_secret_version" "google_search_api_key" {
 resource "google_secret_manager_secret_iam_member" "twilio_sid_access" {
   secret_id = google_secret_manager_secret.twilio_account_sid.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "twilio_token_access" {
   secret_id = google_secret_manager_secret.twilio_auth_token.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "twilio_phone_access" {
   secret_id = google_secret_manager_secret.twilio_phone_number.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "gemini_access" {
   secret_id = google_secret_manager_secret.gemini_api_key.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "elevenlabs_key_access" {
   secret_id = google_secret_manager_secret.elevenlabs_api_key.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "elevenlabs_voice_access" {
   secret_id = google_secret_manager_secret.elevenlabs_voice_id.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "google_search_access" {
   count     = var.google_search_api_key != "" ? 1 : 0
   secret_id = google_secret_manager_secret.google_search_api_key[0].id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.codec_backend.email}"
+  member    = "serviceAccount:${local.service_account_email}"
 }
