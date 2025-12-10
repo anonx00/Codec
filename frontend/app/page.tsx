@@ -157,7 +157,13 @@ export default function Home() {
 
       let cleanContent = data.message;
       if (data.callData) {
-        cleanContent = cleanContent.replace(/\{"action":"call"[^}]+\}/g, '').trim();
+        // Remove JSON from response - handle various formats
+        cleanContent = cleanContent
+          .replace(/```json[\s\S]*?```/g, '')  // Remove ```json ... ``` blocks
+          .replace(/```[\s\S]*?```/g, '')       // Remove any ``` blocks
+          .replace(/\{"action"\s*:\s*"call"[\s\S]*?\}/g, '')  // Remove JSON object
+          .replace(/\n\s*\n/g, '\n')            // Remove extra blank lines
+          .trim();
         setPendingCall(data.callData);
       }
 
