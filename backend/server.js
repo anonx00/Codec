@@ -33,6 +33,7 @@ const getTwilioClient = () => {
 
 const callState = new Map();
 const conversationState = new Map();
+const pendingGeminiSessions = new Map(); // Pre-established Gemini connections
 
 let inboundConfig = {
     enabled: true,
@@ -42,7 +43,7 @@ let inboundConfig = {
     instructions: "Be helpful and concise."
 };
 
-// Cleanup old calls
+// Cleanup old calls and stale Gemini sessions
 setInterval(() => {
     const now = Date.now();
     for (const [k, v] of callState.entries()) {
@@ -50,6 +51,13 @@ setInterval(() => {
     }
     for (const [k, v] of conversationState.entries()) {
         if (now - v.lastUpdate > 30 * 60 * 1000) conversationState.delete(k);
+    }
+    // Clean up stale Gemini sessions (unused after 60 seconds)
+    for (const [k, v] of pendingGeminiSessions.entries()) {
+        if (now - v.createdAt > 60 * 1000) {
+            if (v.geminiWs) v.geminiWs.close();
+            pendingGeminiSessions.delete(k);
+        }
     }
 }, 5 * 60 * 1000);
 
@@ -135,6 +143,73 @@ function pcm24kToMulaw8k(pcmBuffer) {
 }
 
 // ============================================================================
+// PRE-ESTABLISH GEMINI SESSION
+// ============================================================================
+
+function preEstablishGemini(sessionId, state) {
+    return new Promise((resolve, reject) => {
+        const geminiWs = new WebSocket(GEMINI_WS_URL);
+
+        const timeout = setTimeout(() => {
+            geminiWs.close();
+            pendingGeminiSessions.delete(sessionId);
+            reject(new Error('Gemini connection timeout'));
+        }, 10000);
+
+        geminiWs.on('open', () => {
+            console.log(`[GEMINI] Pre-establishing for ${sessionId}`);
+
+            // Build prompt
+            const prompt = state.direction === 'inbound'
+                ? `You're answering a call for ${state.businessName}. Say: "${state.greeting}" then help them. Be natural, brief.`
+                : `You're calling ${state.businessName} about: ${state.task}. Say hi, introduce yourself as ${state.callerName}, explain why you're calling briefly, then have a natural conversation. Be casual and human. Use an Australian accent and be calm and friendly.`;
+
+            geminiWs.send(JSON.stringify({
+                setup: {
+                    model: `models/${GEMINI_MODEL}`,
+                    generationConfig: {
+                        responseModalities: ["AUDIO"],
+                        speechConfig: {
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                        }
+                    },
+                    systemInstruction: { parts: [{ text: prompt }] },
+                    realtimeInputConfig: {
+                        automaticActivityDetection: {}
+                    }
+                }
+            }));
+        });
+
+        geminiWs.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+                if (msg.setupComplete) {
+                    clearTimeout(timeout);
+                    console.log(`[GEMINI] Pre-established and ready for ${sessionId}`);
+
+                    // Store the ready session
+                    pendingGeminiSessions.set(sessionId, {
+                        geminiWs,
+                        ready: true,
+                        state,
+                        createdAt: Date.now()
+                    });
+
+                    resolve(geminiWs);
+                }
+            } catch (e) {}
+        });
+
+        geminiWs.on('error', (e) => {
+            clearTimeout(timeout);
+            pendingGeminiSessions.delete(sessionId);
+            reject(e);
+        });
+    });
+}
+
+// ============================================================================
 // CHAT (Web UI)
 // ============================================================================
 
@@ -216,15 +291,11 @@ app.post('/api/call', async (req, res) => {
         const domain = process.env.SERVER_DOMAIN;
         if (!domain) return res.status(500).json({ error: 'SERVER_DOMAIN not set' });
 
-        const call = await getTwilioClient().calls.create({
-            url: `https://${domain}/twilio/voice?direction=outbound`,
-            to: phoneNumber,
-            from: process.env.TWILIO_PHONE_NUMBER,
-            statusCallback: `https://${domain}/twilio/status`,
-            statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed']
-        });
+        // Generate a temporary session ID for pre-establishing Gemini
+        const tempSessionId = `pre_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-        callState.set(call.sid, {
+        // Build call state early so we can pass it to Gemini
+        const state = {
             direction: 'outbound',
             task: task || 'chat',
             businessName: businessName || 'Someone',
@@ -232,10 +303,35 @@ app.post('/api/call', async (req, res) => {
             callerName: callerName || 'Alex',
             status: 'initiated',
             startTime: new Date().toISOString()
+        };
+
+        // Pre-establish Gemini connection BEFORE placing call
+        console.log(`[CALL] Pre-establishing Gemini for outbound call...`);
+        await preEstablishGemini(tempSessionId, state);
+        console.log(`[CALL] Gemini ready, now placing Twilio call...`);
+
+        // NOW place the Twilio call - Gemini is already ready!
+        const call = await getTwilioClient().calls.create({
+            url: `https://${domain}/twilio/voice?direction=outbound&preSession=${tempSessionId}`,
+            to: phoneNumber,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            statusCallback: `https://${domain}/twilio/status`,
+            statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed']
         });
+
+        // Move the pre-established session to the real call SID
+        const preSession = pendingGeminiSessions.get(tempSessionId);
+        if (preSession) {
+            pendingGeminiSessions.delete(tempSessionId);
+            pendingGeminiSessions.set(call.sid, preSession);
+        }
+
+        // Store call state with the real SID
+        callState.set(call.sid, state);
 
         res.json({ success: true, callSid: call.sid });
     } catch (e) {
+        console.error('[CALL] Error:', e.message);
         res.status(500).json({ error: e.message });
     }
 });
@@ -280,11 +376,13 @@ app.post('/twilio/voice', (req, res) => {
 
     console.log(`[CALL] ${dir}: ${sid}`);
 
+    // For inbound calls, pre-establish Gemini while responding with TwiML
     if (dir === 'inbound' && sid && !callState.has(sid)) {
         if (!inboundConfig.enabled) {
             return res.type('text/xml').send(`<?xml version="1.0"?><Response><Say>Not available.</Say><Hangup/></Response>`);
         }
-        callState.set(sid, {
+
+        const state = {
             direction: 'inbound',
             from: req.body.From,
             to: req.body.To,
@@ -294,9 +392,15 @@ app.post('/twilio/voice', (req, res) => {
             greeting: inboundConfig.greeting,
             status: 'answered',
             startTime: new Date().toISOString()
-        });
+        };
+        callState.set(sid, state);
+
+        // Pre-establish Gemini for inbound (fire and forget - will be ready by WebSocket connect)
+        preEstablishGemini(sid, state).catch(e => console.error('[GEMINI] Pre-establish failed:', e.message));
     }
 
+    // No greeting needed - Gemini is pre-established and will speak immediately
+    // Connect directly to WebSocket for instant AI response
     res.type('text/xml').send(`<?xml version="1.0"?><Response><Connect><Stream url="wss://${domain}/ws/voice"><Parameter name="direction" value="${dir}"/><Parameter name="callSid" value="${sid}"/></Stream></Connect></Response>`);
 });
 
@@ -318,22 +422,53 @@ const server = app.listen(PORT, () => console.log(`[CODEC] Port ${PORT}`));
 const wss = new WebSocketServer({ server, path: '/ws/voice' });
 
 wss.on('connection', (twilioWs) => {
-    console.log('[WS] Connected');
+    console.log('[WS] Twilio connected');
 
     let callSid = null, streamSid = null, direction = 'outbound';
     let geminiWs = null;
     let ready = false;
 
-    const startGemini = (state) => {
+    // Wire up Gemini message handler to stream audio to Twilio
+    const wireGeminiToTwilio = (gWs) => {
+        gWs.on('message', (data) => {
+            try {
+                const msg = JSON.parse(data.toString());
+
+                // Stream audio directly to Twilio
+                if (msg.serverContent?.modelTurn?.parts) {
+                    for (const part of msg.serverContent.modelTurn.parts) {
+                        if (part.inlineData?.data) {
+                            const pcm = Buffer.from(part.inlineData.data, 'base64');
+                            const mulaw = pcm24kToMulaw8k(pcm);
+
+                            if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
+                                twilioWs.send(JSON.stringify({
+                                    event: 'media',
+                                    streamSid,
+                                    media: { payload: mulaw.toString('base64') }
+                                }));
+                            }
+                        }
+                    }
+                }
+            } catch (e) {}
+        });
+
+        gWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
+        gWs.on('close', () => { ready = false; });
+    };
+
+    // Fallback: create Gemini on-the-fly if no pre-established session
+    const startGeminiFallback = (state) => {
+        console.log('[GEMINI] No pre-established session, creating new one...');
         geminiWs = new WebSocket(GEMINI_WS_URL);
 
         geminiWs.on('open', () => {
-            console.log('[GEMINI] Connected');
+            console.log('[GEMINI] Fallback connected');
 
-            // Simple, direct prompt - no fluff
             const prompt = direction === 'inbound'
                 ? `You're answering a call for ${state.businessName}. Say: "${state.greeting}" then help them. Be natural, brief.`
-                : `You're calling ${state.businessName} about: ${state.task}. Say hi, introduce yourself as ${state.callerName}, explain why you're calling briefly, then have a natural conversation. Be casual and human.`;
+                : `You're calling ${state.businessName} about: ${state.task}. Say hi, introduce yourself as ${state.callerName}, explain why you're calling briefly, then have a natural conversation. Be casual and human. Use an Australian accent and be calm and friendly.`;
 
             geminiWs.send(JSON.stringify({
                 setup: {
@@ -357,10 +492,10 @@ wss.on('connection', (twilioWs) => {
                 const msg = JSON.parse(data.toString());
 
                 if (msg.setupComplete) {
-                    console.log('[GEMINI] Ready');
+                    console.log('[GEMINI] Fallback ready');
                     ready = true;
 
-                    // Immediately trigger greeting - no delay
+                    // Trigger greeting
                     geminiWs.send(JSON.stringify({
                         clientContent: {
                             turns: [{ role: "user", parts: [{ text: "Start now." }] }],
@@ -370,7 +505,7 @@ wss.on('connection', (twilioWs) => {
                     return;
                 }
 
-                // Stream audio directly to Twilio
+                // Stream audio to Twilio
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
                         if (part.inlineData?.data) {
@@ -387,9 +522,7 @@ wss.on('connection', (twilioWs) => {
                         }
                     }
                 }
-            } catch (e) {
-                // Ignore parse errors
-            }
+            } catch (e) {}
         });
 
         geminiWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
@@ -405,11 +538,33 @@ wss.on('connection', (twilioWs) => {
                 callSid = msg.start.customParameters?.callSid || msg.start.callSid;
                 direction = msg.start.customParameters?.direction || 'outbound';
 
-                console.log(`[CALL] ${callSid} started`);
-                startGemini(callState.get(callSid) || {});
+                console.log(`[CALL] ${callSid} stream started`);
+
+                // Check for pre-established Gemini session
+                const preSession = pendingGeminiSessions.get(callSid);
+                if (preSession && preSession.ready && preSession.geminiWs?.readyState === WebSocket.OPEN) {
+                    console.log(`[GEMINI] Using pre-established session for ${callSid}`);
+                    geminiWs = preSession.geminiWs;
+                    ready = true;
+                    pendingGeminiSessions.delete(callSid);
+
+                    // Wire up the audio routing
+                    wireGeminiToTwilio(geminiWs);
+
+                    // Immediately trigger the AI to speak - no delay!
+                    geminiWs.send(JSON.stringify({
+                        clientContent: {
+                            turns: [{ role: "user", parts: [{ text: "Start now." }] }],
+                            turnComplete: true
+                        }
+                    }));
+                } else {
+                    // Fallback: create new Gemini session
+                    startGeminiFallback(callState.get(callSid) || {});
+                }
             }
             else if (msg.event === 'media' && ready && geminiWs?.readyState === WebSocket.OPEN) {
-                // Stream audio to Gemini immediately
+                // Stream caller audio to Gemini
                 const pcm = mulawToPcm16k(Buffer.from(msg.media.payload, 'base64'));
                 geminiWs.send(JSON.stringify({
                     realtimeInput: {
@@ -418,12 +573,16 @@ wss.on('connection', (twilioWs) => {
                 }));
             }
             else if (msg.event === 'stop') {
+                console.log(`[CALL] ${callSid} stream stopped`);
                 if (geminiWs) geminiWs.close();
             }
         } catch (e) {}
     });
 
-    twilioWs.on('close', () => { if (geminiWs) geminiWs.close(); });
+    twilioWs.on('close', () => {
+        console.log('[WS] Twilio disconnected');
+        if (geminiWs) geminiWs.close();
+    });
 });
 
-console.log('[CODEC] v5.1 Ready');
+console.log('[CODEC] v5.2 Ready - Pre-established Gemini sessions');
