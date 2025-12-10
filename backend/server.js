@@ -7,12 +7,13 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // CORS support
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
@@ -28,9 +29,23 @@ const getTwilioClient = () => {
     return twilioClient;
 };
 
+// ============================================================================
+// STATE MANAGEMENT
+// ============================================================================
+
 // Store active call state with TTL cleanup
 const callState = new Map();
 const CALL_STATE_TTL = 30 * 60 * 1000; // 30 minutes
+
+// Inbound call configuration (persisted in memory, could be moved to database)
+let inboundConfig = {
+    enabled: true,
+    greeting: "Hello, thank you for calling. How can I help you today?",
+    businessName: "CODEC AI Assistant",
+    purpose: "general assistance",
+    instructions: "Be helpful, professional, and concise. Answer questions and assist callers with their needs.",
+    voiceId: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL'
+};
 
 // Cleanup old call states periodically
 setInterval(() => {
@@ -41,25 +56,27 @@ setInterval(() => {
             console.log(`[CLEANUP] Removed stale call state: ${sid}`);
         }
     }
-}, 5 * 60 * 1000); // Every 5 minutes
+}, 5 * 60 * 1000);
 
-// Gemini configuration
+// ============================================================================
+// GEMINI CONFIGURATION
+// ============================================================================
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ============================================================================
-// CACHING - Reduce redundant API calls
+// CACHING
 // ============================================================================
 
-// Cache for ElevenLabs voices (refresh every hour)
 let voicesCache = null;
 let voicesCacheTime = 0;
 const VOICES_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 // ============================================================================
-// AUDIO CONVERSION - Pre-computed lookup table for speed
+// AUDIO CONVERSION - Pre-computed lookup table
 // ============================================================================
 
 const MULAW_DECODE_TABLE = new Int16Array([
@@ -116,10 +133,10 @@ function mulawToPcm16(mulawBuffer) {
 }
 
 // ============================================================================
-// SYSTEM PROMPT
+// SYSTEM PROMPTS
 // ============================================================================
 
-const SYSTEM_INSTRUCTION = `You are CODEC, an advanced AI assistant making phone calls on behalf of users.
+const OUTBOUND_SYSTEM_PROMPT = `You are CODEC, an advanced AI assistant making phone calls on behalf of users.
 
 Personality:
 - Professional, friendly, and confident
@@ -136,19 +153,32 @@ Guidelines:
 
 Remember: Be persistent but never rude. Represent the user professionally.`;
 
+const getInboundSystemPrompt = (config) => `You are ${config.businessName}, an AI assistant answering incoming phone calls.
+
+Your Purpose: ${config.purpose}
+
+Instructions: ${config.instructions}
+
+Guidelines:
+- Start with a warm greeting
+- Listen carefully to what the caller needs
+- Be helpful, professional, and concise
+- Keep responses to 1-2 sentences
+- If you can't help with something, politely explain and offer alternatives
+- Always be polite when ending the call
+
+Remember: You represent ${config.businessName}. Be professional and helpful.`;
+
 // ============================================================================
-// AGENTIC TOOLS
+// HELPER FUNCTIONS
 // ============================================================================
 
-/**
- * Search web - only if Google Search is configured
- */
 async function searchWeb(query) {
     const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
     const engineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
 
     if (!apiKey || !engineId) {
-        console.log('[SEARCH] Google Search not configured, skipping');
+        console.log('[SEARCH] Google Search not configured');
         return { success: false, error: 'Search not configured' };
     }
 
@@ -160,17 +190,18 @@ async function searchWeb(query) {
         const data = await response.json();
 
         if (data.error) {
-            console.error('[SEARCH] API Error:', data.error.message);
             return { success: false, error: data.error.message };
         }
 
         if (data.items?.length > 0) {
-            const results = data.items.map(item => ({
-                title: item.title,
-                snippet: item.snippet,
-                link: item.link
-            }));
-            return { success: true, results };
+            return {
+                success: true,
+                results: data.items.map(item => ({
+                    title: item.title,
+                    snippet: item.snippet,
+                    link: item.link
+                }))
+            };
         }
 
         return { success: false, error: 'No results found' };
@@ -180,23 +211,17 @@ async function searchWeb(query) {
     }
 }
 
-/**
- * Find phone number from search results
- */
 async function findRestaurantPhone(businessName, location) {
     const query = `${businessName} ${location} phone number contact`.trim();
     const result = await searchWeb(query);
 
-    if (!result.success) {
-        return result;
-    }
+    if (!result.success) return result;
 
-    // Australian phone patterns
     const phonePatterns = [
-        /\+61\s?\d{1,2}\s?\d{4}\s?\d{4}/g,  // +61 format
-        /\(0\d\)\s?\d{4}\s?\d{4}/g,          // (0X) XXXX XXXX
-        /0\d\s?\d{4}\s?\d{4}/g,              // 0X XXXX XXXX
-        /1[38]00\s?\d{3}\s?\d{3}/g,          // 1300/1800 numbers
+        /\+61\s?\d{1,2}\s?\d{4}\s?\d{4}/g,
+        /\(0\d\)\s?\d{4}\s?\d{4}/g,
+        /0\d\s?\d{4}\s?\d{4}/g,
+        /1[38]00\s?\d{3}\s?\d{3}/g,
     ];
 
     for (const item of result.results) {
@@ -206,24 +231,15 @@ async function findRestaurantPhone(businessName, location) {
             if (matches) {
                 const phone = matches[0].replace(/[\s\-\(\)]/g, '');
                 if (phone.length >= 8) {
-                    console.log(`[PHONE] Found: ${phone} from ${item.title}`);
-                    return {
-                        success: true,
-                        phone: phone,
-                        source: item.title,
-                        restaurant: businessName
-                    };
+                    return { success: true, phone, source: item.title, restaurant: businessName };
                 }
             }
         }
     }
 
-    return { success: false, error: 'Phone number not found in search results' };
+    return { success: false, error: 'Phone number not found' };
 }
 
-/**
- * AI Planning using Gemini
- */
 async function agentPlan(userRequest) {
     console.log(`[AGENT] Planning: ${userRequest.substring(0, 100)}...`);
 
@@ -237,7 +253,7 @@ Respond ONLY with valid JSON (no markdown):
     "business_name": "name or null",
     "location": "city/area or null",
     "date_time": "when or null",
-    "party_size": null,
+    "party_size": number or null,
     "special_requests": "notes or null",
     "need_phone_search": true/false,
     "ready_to_call": true/false,
@@ -259,8 +275,6 @@ Respond ONLY with valid JSON (no markdown):
 
         const data = await response.json();
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-
-        // Extract JSON
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
             return JSON.parse(jsonMatch[0]);
@@ -269,20 +283,12 @@ Respond ONLY with valid JSON (no markdown):
         console.error('[AGENT] Planning error:', error.message);
     }
 
-    return {
-        action: 'unknown',
-        ready_to_call: false,
-        missing_info: ['Could not parse request']
-    };
+    return { action: 'unknown', ready_to_call: false, missing_info: ['Could not parse request'] };
 }
 
-/**
- * Get ElevenLabs voices with caching
- */
 async function getElevenLabsVoices() {
     const now = Date.now();
 
-    // Return cached if fresh
     if (voicesCache && (now - voicesCacheTime) < VOICES_CACHE_TTL) {
         return voicesCache;
     }
@@ -317,6 +323,18 @@ async function getElevenLabsVoices() {
     return { success: false, error: 'Failed to fetch voices' };
 }
 
+// Default voices fallback
+const DEFAULT_VOICES = [
+    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' },
+    { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', category: 'premade', accent: 'american', gender: 'female' },
+    { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi', category: 'premade', accent: 'american', gender: 'female' },
+    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', category: 'premade', accent: 'american', gender: 'female' },
+    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', category: 'premade', accent: 'american', gender: 'male' },
+    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', category: 'premade', accent: 'american', gender: 'male' },
+    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', category: 'premade', accent: 'american', gender: 'male' },
+    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', category: 'premade', accent: 'american', gender: 'male' }
+];
+
 // ============================================================================
 // API ROUTES
 // ============================================================================
@@ -327,12 +345,16 @@ app.get('/', (req, res) => {
         name: 'CODEC AI Caller',
         version: '2.0.0',
         status: 'running',
+        features: ['outbound_calls', 'inbound_calls', 'voice_selection', 'ai_planning'],
         endpoints: {
-            health: '/health',
-            voices: '/api/voices',
-            plan: '/api/agent/plan',
-            call: '/api/call',
-            search: '/api/search'
+            health: 'GET /health',
+            voices: 'GET /api/voices',
+            plan: 'POST /api/agent/plan',
+            call: 'POST /api/call',
+            callStatus: 'GET /api/call/:callSid',
+            inboundConfig: 'GET/POST /api/inbound/config',
+            search: 'POST /api/search',
+            twilioVoice: 'POST /twilio/voice'
         }
     });
 });
@@ -342,45 +364,46 @@ app.get('/health', (req, res) => {
         status: 'ok',
         service: 'CODEC AI Caller',
         timestamp: new Date().toISOString(),
-        activeCalls: callState.size
+        activeCalls: callState.size,
+        inboundEnabled: inboundConfig.enabled
     });
 });
 
+// Voices endpoint with fallback
 app.get('/api/voices', async (req, res) => {
     try {
         const result = await getElevenLabsVoices();
         if (result.success) {
             res.json(result);
         } else {
-            // Return default voices if API fails
-            res.json({
-                success: true,
-                voices: [
-                    { voice_id: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' },
-                    { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', category: 'premade', accent: 'american', gender: 'female' },
-                    { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi', category: 'premade', accent: 'american', gender: 'female' },
-                    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', category: 'premade', accent: 'american', gender: 'female' },
-                    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', category: 'premade', accent: 'american', gender: 'male' },
-                    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', category: 'premade', accent: 'american', gender: 'male' },
-                    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', category: 'premade', accent: 'american', gender: 'male' },
-                    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', category: 'premade', accent: 'american', gender: 'male' }
-                ],
-                cached: false,
-                fallback: true
-            });
+            res.json({ success: true, voices: DEFAULT_VOICES, fallback: true });
         }
     } catch (error) {
         console.error('[API] Voices error:', error);
-        res.json({
-            success: true,
-            voices: [
-                { voice_id: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' }
-            ],
-            fallback: true
-        });
+        res.json({ success: true, voices: DEFAULT_VOICES, fallback: true });
     }
 });
 
+// Inbound call configuration
+app.get('/api/inbound/config', (req, res) => {
+    res.json({ success: true, config: inboundConfig });
+});
+
+app.post('/api/inbound/config', (req, res) => {
+    const { enabled, greeting, businessName, purpose, instructions, voiceId } = req.body;
+
+    if (typeof enabled === 'boolean') inboundConfig.enabled = enabled;
+    if (greeting?.trim()) inboundConfig.greeting = greeting.trim();
+    if (businessName?.trim()) inboundConfig.businessName = businessName.trim();
+    if (purpose?.trim()) inboundConfig.purpose = purpose.trim();
+    if (instructions?.trim()) inboundConfig.instructions = instructions.trim();
+    if (voiceId?.trim()) inboundConfig.voiceId = voiceId.trim();
+
+    console.log('[CONFIG] Inbound config updated:', inboundConfig);
+    res.json({ success: true, config: inboundConfig });
+});
+
+// AI Planning
 app.post('/api/agent/plan', async (req, res) => {
     const { request } = req.body;
 
@@ -391,13 +414,8 @@ app.post('/api/agent/plan', async (req, res) => {
     try {
         const plan = await agentPlan(request);
 
-        // Search for phone if needed and configured
         if (plan.need_phone_search && plan.business_name && process.env.GOOGLE_SEARCH_API_KEY) {
-            const phoneResult = await findRestaurantPhone(
-                plan.business_name,
-                plan.location || ''
-            );
-
+            const phoneResult = await findRestaurantPhone(plan.business_name, plan.location || '');
             if (phoneResult.success) {
                 plan.phone_number = phoneResult.phone;
                 plan.phone_source = phoneResult.source;
@@ -415,26 +433,25 @@ app.post('/api/agent/plan', async (req, res) => {
     }
 });
 
+// Search
 app.post('/api/search', async (req, res) => {
     const { query } = req.body;
-
     if (!query?.trim()) {
         return res.status(400).json({ error: 'Search query required' });
     }
-
     res.json(await searchWeb(query));
 });
 
+// Find phone
 app.post('/api/find-phone', async (req, res) => {
     const { business, location } = req.body;
-
     if (!business?.trim()) {
         return res.status(400).json({ error: 'Business name required' });
     }
-
     res.json(await findRestaurantPhone(business, location || ''));
 });
 
+// Initiate outbound call
 app.post('/api/call', async (req, res) => {
     const { phoneNumber, task, businessName, details, voiceId } = req.body;
 
@@ -446,8 +463,12 @@ app.post('/api/call', async (req, res) => {
         const client = getTwilioClient();
         const serverDomain = process.env.SERVER_DOMAIN;
 
+        if (!serverDomain) {
+            return res.status(500).json({ error: 'SERVER_DOMAIN not configured' });
+        }
+
         const call = await client.calls.create({
-            url: `https://${serverDomain}/twilio/voice`,
+            url: `https://${serverDomain}/twilio/voice?direction=outbound`,
             to: phoneNumber,
             from: process.env.TWILIO_PHONE_NUMBER,
             statusCallback: `https://${serverDomain}/twilio/status`,
@@ -455,6 +476,7 @@ app.post('/api/call', async (req, res) => {
         });
 
         callState.set(call.sid, {
+            direction: 'outbound',
             task: task || 'general inquiry',
             businessName: businessName || 'the business',
             details: details || '',
@@ -463,7 +485,7 @@ app.post('/api/call', async (req, res) => {
             startTime: new Date().toISOString()
         });
 
-        console.log(`[CALL] Initiated: ${call.sid} to ${phoneNumber}`);
+        console.log(`[CALL] Outbound initiated: ${call.sid} to ${phoneNumber}`);
         res.json({ success: true, callSid: call.sid, status: 'initiated' });
     } catch (error) {
         console.error('[CALL] Error:', error);
@@ -471,6 +493,7 @@ app.post('/api/call', async (req, res) => {
     }
 });
 
+// Get call status
 app.get('/api/call/:callSid', async (req, res) => {
     const { callSid } = req.params;
     const state = callState.get(callSid);
@@ -479,7 +502,6 @@ app.get('/api/call/:callSid', async (req, res) => {
         return res.status(404).json({ error: 'Call not found' });
     }
 
-    // Only fetch from Twilio if status might have changed
     if (!['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(state.status)) {
         try {
             const client = getTwilioClient();
@@ -494,32 +516,86 @@ app.get('/api/call/:callSid', async (req, res) => {
     res.json({ sid: callSid, ...state });
 });
 
+// Get all active calls
+app.get('/api/calls', (req, res) => {
+    const calls = [];
+    for (const [sid, state] of callState.entries()) {
+        calls.push({ sid, ...state });
+    }
+    res.json({ success: true, calls });
+});
+
+// ============================================================================
+// TWILIO WEBHOOKS
+// ============================================================================
+
 // GET handler for browser visits
 app.get('/twilio/voice', (req, res) => {
     res.json({
         endpoint: '/twilio/voice',
         method: 'POST',
-        description: 'Twilio webhook endpoint for incoming calls',
-        note: 'This endpoint only accepts POST requests from Twilio. Configure this URL in your Twilio phone number settings.'
+        description: 'Twilio webhook for voice calls (inbound and outbound)',
+        inboundEnabled: inboundConfig.enabled
     });
 });
 
+// Voice webhook - handles both inbound and outbound
 app.post('/twilio/voice', (req, res) => {
     const serverDomain = process.env.SERVER_DOMAIN;
+    const direction = req.query.direction || 'inbound';
+    const callSid = req.body.CallSid;
+    const from = req.body.From;
+    const to = req.body.To;
+
+    console.log(`[TWILIO] ${direction} call: ${callSid} from ${from} to ${to}`);
+
+    // For inbound calls, create state if not exists
+    if (direction === 'inbound' && callSid && !callState.has(callSid)) {
+        if (!inboundConfig.enabled) {
+            // Reject call if inbound is disabled
+            res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>Sorry, we are not accepting calls at this time. Please try again later.</Say>
+    <Hangup/>
+</Response>`);
+            return;
+        }
+
+        callState.set(callSid, {
+            direction: 'inbound',
+            from: from,
+            to: to,
+            task: inboundConfig.purpose,
+            businessName: inboundConfig.businessName,
+            details: inboundConfig.instructions,
+            greeting: inboundConfig.greeting,
+            voiceId: inboundConfig.voiceId,
+            status: 'answered',
+            startTime: new Date().toISOString()
+        });
+        console.log(`[CALL] Inbound call registered: ${callSid} from ${from}`);
+    }
+
+    // Connect to media stream
     res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="wss://${serverDomain}/ws/voice" />
+        <Stream url="wss://${serverDomain}/ws/voice">
+            <Parameter name="direction" value="${direction}"/>
+            <Parameter name="callSid" value="${callSid}"/>
+        </Stream>
     </Connect>
 </Response>`);
 });
 
+// Status callback
 app.post('/twilio/status', (req, res) => {
-    const { CallSid, CallStatus } = req.body;
+    const { CallSid, CallStatus, CallDuration } = req.body;
 
     if (CallSid && callState.has(CallSid)) {
         const state = callState.get(CallSid);
         state.status = CallStatus;
+        if (CallDuration) state.duration = parseInt(CallDuration);
 
         if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(CallStatus)) {
             state.endTime = new Date().toISOString();
@@ -543,26 +619,29 @@ const server = app.listen(PORT, () => {
 ╠═══════════════════════════════════════════════════════════╣
 ║  HTTP:      http://0.0.0.0:${PORT}                           ║
 ║  WebSocket: wss://SERVER_DOMAIN/ws/voice                   ║
+║  Inbound:   ${inboundConfig.enabled ? 'ENABLED' : 'DISABLED'}                                      ║
 ╚═══════════════════════════════════════════════════════════╝
 `);
 });
 
 const wss = new WebSocketServer({ server, path: '/ws/voice' });
 
-wss.on('connection', (twilioWs) => {
-    console.log('[WS] Twilio connected');
+wss.on('connection', (twilioWs, req) => {
+    console.log('[WS] Twilio media stream connected');
 
     let callSid = null;
     let streamSid = null;
+    let direction = 'outbound';
     let geminiWs = null;
     let elevenLabsWs = null;
     let isGeminiReady = false;
     let currentVoiceId = process.env.ELEVENLABS_VOICE_ID;
+    let hasGreeted = false;
 
-    // Audio buffer for batching (reduces Gemini API calls)
+    // Audio buffer for batching
     let audioBuffer = [];
     let audioBufferTimer = null;
-    const AUDIO_BUFFER_MS = 100; // Send audio every 100ms
+    const AUDIO_BUFFER_MS = 100;
 
     const flushAudioBuffer = () => {
         if (audioBuffer.length === 0 || !geminiWs || !isGeminiReady) return;
@@ -582,8 +661,8 @@ wss.on('connection', (twilioWs) => {
         }
     };
 
-    const setupGemini = (context) => {
-        console.log('[GEMINI] Connecting...');
+    const setupGemini = (context, systemPrompt) => {
+        console.log(`[GEMINI] Connecting for ${direction} call...`);
         geminiWs = new WebSocket(GEMINI_WS_URL);
 
         geminiWs.on('open', () => {
@@ -593,7 +672,7 @@ wss.on('connection', (twilioWs) => {
                     model: `models/${GEMINI_MODEL}`,
                     generationConfig: { responseModalities: ["TEXT"] },
                     systemInstruction: {
-                        parts: [{ text: `${SYSTEM_INSTRUCTION}\n\nTask: ${context}` }]
+                        parts: [{ text: `${systemPrompt}\n\nContext: ${context}` }]
                     }
                 }
             }));
@@ -607,24 +686,30 @@ wss.on('connection', (twilioWs) => {
                     console.log('[GEMINI] Ready');
                     isGeminiReady = true;
 
-                    // Start conversation
-                    geminiWs.send(JSON.stringify({
-                        clientContent: {
-                            turns: [{
-                                role: "user",
-                                parts: [{ text: "Call connected. Begin appropriately." }]
-                            }],
-                            turnComplete: true
-                        }
-                    }));
+                    // For inbound calls, greet immediately
+                    // For outbound calls, wait for the other party to answer
+                    const state = callState.get(callSid);
+                    if (direction === 'inbound' && state?.greeting && !hasGreeted) {
+                        hasGreeted = true;
+                        sendToElevenLabs(state.greeting);
+                    } else if (direction === 'outbound') {
+                        geminiWs.send(JSON.stringify({
+                            clientContent: {
+                                turns: [{
+                                    role: "user",
+                                    parts: [{ text: "The call has connected. Begin the conversation appropriately." }]
+                                }],
+                                turnComplete: true
+                            }
+                        }));
+                    }
                     return;
                 }
 
-                // Handle response text
                 const parts = msg.serverContent?.modelTurn?.parts || [];
                 for (const part of parts) {
                     if (part.text) {
-                        console.log('[GEMINI]:', part.text);
+                        console.log(`[GEMINI ${direction}]:`, part.text);
                         sendToElevenLabs(part.text);
                     }
                 }
@@ -671,7 +756,7 @@ wss.on('connection', (twilioWs) => {
                     }));
                 }
             } catch (e) {
-                // Binary or non-JSON data
+                // Binary or non-JSON
             }
         });
 
@@ -681,9 +766,8 @@ wss.on('connection', (twilioWs) => {
 
     const sendToElevenLabs = (text) => {
         if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) return;
-
         elevenLabsWs.send(JSON.stringify({ text: text + " ", try_trigger_generation: true }));
-        elevenLabsWs.send(JSON.stringify({ text: "" })); // Flush
+        elevenLabsWs.send(JSON.stringify({ text: "" }));
     };
 
     // Handle Twilio messages
@@ -697,20 +781,30 @@ wss.on('connection', (twilioWs) => {
                     streamSid = msg.start.streamSid;
                     callSid = msg.start.callSid;
 
+                    // Get custom parameters
+                    const params = msg.start.customParameters || {};
+                    direction = params.direction || 'outbound';
+
                     const state = callState.get(callSid) || {};
                     currentVoiceId = state.voiceId || process.env.ELEVENLABS_VOICE_ID;
 
-                    const context = `${state.task || 'inquiry'} - ${state.businessName || 'business'}. ${state.details || ''}`;
+                    // Build context and system prompt based on direction
+                    let context, systemPrompt;
+                    if (direction === 'inbound') {
+                        context = `Inbound call. Caller: ${state.from || 'unknown'}. Purpose: ${state.task || inboundConfig.purpose}`;
+                        systemPrompt = getInboundSystemPrompt(state.businessName ? state : inboundConfig);
+                    } else {
+                        context = `${state.task || 'inquiry'} - ${state.businessName || 'business'}. ${state.details || ''}`;
+                        systemPrompt = OUTBOUND_SYSTEM_PROMPT;
+                    }
 
-                    setupGemini(context);
+                    setupGemini(context, systemPrompt);
                     setupElevenLabs();
 
-                    // Start audio buffer flush timer
                     audioBufferTimer = setInterval(flushAudioBuffer, AUDIO_BUFFER_MS);
                     break;
 
                 case 'media':
-                    // Buffer audio for batched sending
                     const pcm = mulawToPcm16(Buffer.from(msg.media.payload, 'base64'));
                     audioBuffer.push(pcm);
                     break;
@@ -740,4 +834,4 @@ wss.on('connection', (twilioWs) => {
     twilioWs.on('error', (e) => console.error('[TWILIO] Error:', e.message));
 });
 
-console.log('[CODEC] Server initialized');
+console.log('[CODEC] Server initialized - Inbound & Outbound calls ready');

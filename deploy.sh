@@ -354,6 +354,18 @@ terraform apply -auto-approve
 BACKEND_URL=$(terraform output -raw backend_url 2>/dev/null || echo "")
 FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
 
+# Fix SERVER_DOMAIN for backend (extract domain from URL)
+if [ -n "$BACKEND_URL" ]; then
+    BACKEND_DOMAIN=$(echo "$BACKEND_URL" | sed 's|https://||')
+    echo ""
+    echo -e "${YELLOW}Updating backend SERVER_DOMAIN to: $BACKEND_DOMAIN${NC}"
+    gcloud run services update codec-backend \
+        --region $REGION \
+        --update-env-vars "SERVER_DOMAIN=$BACKEND_DOMAIN" \
+        --quiet
+    echo -e "${GREEN}SERVER_DOMAIN updated${NC}"
+fi
+
 # Rebuild frontend with actual backend URL
 if [ -n "$BACKEND_URL" ]; then
     echo ""
