@@ -30,11 +30,12 @@ check_command gcloud
 check_command terraform
 check_command docker
 
-# Check if logged in to GCP
-if ! gcloud auth print-identity-token &> /dev/null 2>&1; then
+# Check if in Cloud Shell or logged in
+if [ -n "$CLOUD_SHELL" ] || [ -n "$GOOGLE_CLOUD_PROJECT" ]; then
+    echo -e "${GREEN}Running in Cloud Shell - already authenticated${NC}"
+elif ! gcloud auth print-identity-token &> /dev/null 2>&1; then
     echo -e "${YELLOW}Please log in to Google Cloud:${NC}"
-    gcloud auth login
-    gcloud auth application-default login
+    gcloud auth login --no-launch-browser
 fi
 
 # Get or set project
@@ -153,20 +154,6 @@ if [ "$SKIP_CREDENTIALS" = false ]; then
         exit 1
     fi
 
-    # ElevenLabs
-    echo ""
-    echo -e "${YELLOW}ELEVENLABS CONFIGURATION${NC}"
-    echo "Get from: https://elevenlabs.io -> Profile -> API Keys"
-    read -sp "ElevenLabs API Key: " ELEVENLABS_KEY
-    echo ""
-    if [ -z "$ELEVENLABS_KEY" ]; then
-        echo -e "${RED}ElevenLabs API Key is required${NC}"
-        exit 1
-    fi
-
-    read -p "ElevenLabs Voice ID [EXAVITQu4vr4xnSDxMaL]: " ELEVENLABS_VOICE
-    ELEVENLABS_VOICE=${ELEVENLABS_VOICE:-EXAVITQu4vr4xnSDxMaL}
-
     # Google Custom Search (optional)
     echo ""
     echo -e "${YELLOW}GOOGLE CUSTOM SEARCH (Optional)${NC}"
@@ -201,11 +188,7 @@ twilio_phone_number = "$TWILIO_PHONE"
 # Gemini
 gemini_api_key = "$GEMINI_KEY"
 
-# ElevenLabs
-elevenlabs_api_key  = "$ELEVENLABS_KEY"
-elevenlabs_voice_id = "$ELEVENLABS_VOICE"
-
-# Google Search
+# Google Search (optional)
 google_search_api_key   = "$GOOGLE_SEARCH_KEY"
 google_search_engine_id = "$GOOGLE_SEARCH_CX"
 EOF
@@ -274,8 +257,6 @@ import_secret_if_exists "twilio-account-sid" "google_secret_manager_secret.twili
 import_secret_if_exists "twilio-auth-token" "google_secret_manager_secret.twilio_auth_token"
 import_secret_if_exists "twilio-phone-number" "google_secret_manager_secret.twilio_phone_number"
 import_secret_if_exists "gemini-api-key" "google_secret_manager_secret.gemini_api_key"
-import_secret_if_exists "elevenlabs-api-key" "google_secret_manager_secret.elevenlabs_api_key"
-import_secret_if_exists "elevenlabs-voice-id" "google_secret_manager_secret.elevenlabs_voice_id"
 if [ -n "$GOOGLE_SEARCH_KEY" ]; then
     import_secret_if_exists "google-search-api-key" "google_secret_manager_secret.google_search_api_key[0]"
 fi
@@ -302,20 +283,14 @@ terraform apply \
     -target=google_secret_manager_secret.twilio_auth_token \
     -target=google_secret_manager_secret.twilio_phone_number \
     -target=google_secret_manager_secret.gemini_api_key \
-    -target=google_secret_manager_secret.elevenlabs_api_key \
-    -target=google_secret_manager_secret.elevenlabs_voice_id \
     -target=google_secret_manager_secret_version.twilio_account_sid \
     -target=google_secret_manager_secret_version.twilio_auth_token \
     -target=google_secret_manager_secret_version.twilio_phone_number \
     -target=google_secret_manager_secret_version.gemini_api_key \
-    -target=google_secret_manager_secret_version.elevenlabs_api_key \
-    -target=google_secret_manager_secret_version.elevenlabs_voice_id \
     -target=google_secret_manager_secret_iam_member.twilio_sid_access \
     -target=google_secret_manager_secret_iam_member.twilio_token_access \
     -target=google_secret_manager_secret_iam_member.twilio_phone_access \
     -target=google_secret_manager_secret_iam_member.gemini_access \
-    -target=google_secret_manager_secret_iam_member.elevenlabs_key_access \
-    -target=google_secret_manager_secret_iam_member.elevenlabs_voice_access \
     -auto-approve
 
 # Build and push Docker images
