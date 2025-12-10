@@ -9,7 +9,6 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS support
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
@@ -20,7 +19,6 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 8080;
 
-// Initialize Twilio
 let twilioClient = null;
 const getTwilioClient = () => {
     if (!twilioClient) {
@@ -30,12 +28,11 @@ const getTwilioClient = () => {
 };
 
 // ============================================================================
-// STATE MANAGEMENT
+// STATE
 // ============================================================================
 
 const callState = new Map();
-const conversationState = new Map(); // Store chat conversations
-const CALL_STATE_TTL = 30 * 60 * 1000;
+const conversationState = new Map();
 
 let inboundConfig = {
     enabled: true,
@@ -46,23 +43,18 @@ let inboundConfig = {
     voiceId: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL'
 };
 
-// Cleanup
 setInterval(() => {
     const now = Date.now();
-    for (const [sid, state] of callState.entries()) {
-        if (now - new Date(state.startTime).getTime() > CALL_STATE_TTL) {
-            callState.delete(sid);
-        }
+    for (const [k, v] of callState.entries()) {
+        if (now - new Date(v.startTime).getTime() > 30 * 60 * 1000) callState.delete(k);
     }
-    for (const [id, conv] of conversationState.entries()) {
-        if (now - conv.lastUpdate > CALL_STATE_TTL) {
-            conversationState.delete(id);
-        }
+    for (const [k, v] of conversationState.entries()) {
+        if (now - v.lastUpdate > 30 * 60 * 1000) conversationState.delete(k);
     }
 }, 5 * 60 * 1000);
 
 // ============================================================================
-// GEMINI CONFIGURATION
+// GEMINI CONFIG
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -71,57 +63,31 @@ const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.gene
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
 // ============================================================================
-// CACHING
-// ============================================================================
-
-let voicesCache = null;
-let voicesCacheTime = 0;
-const VOICES_CACHE_TTL = 60 * 60 * 1000;
-
-// ============================================================================
 // AUDIO CONVERSION
 // ============================================================================
 
-const MULAW_DECODE_TABLE = new Int16Array([
-    -32124, -31100, -30076, -29052, -28028, -27004, -25980, -24956,
-    -23932, -22908, -21884, -20860, -19836, -18812, -17788, -16764,
-    -15996, -15484, -14972, -14460, -13948, -13436, -12924, -12412,
-    -11900, -11388, -10876, -10364, -9852, -9340, -8828, -8316,
-    -7932, -7676, -7420, -7164, -6908, -6652, -6396, -6140,
-    -5884, -5628, -5372, -5116, -4860, -4604, -4348, -4092,
-    -3900, -3772, -3644, -3516, -3388, -3260, -3132, -3004,
-    -2876, -2748, -2620, -2492, -2364, -2236, -2108, -1980,
-    -1884, -1820, -1756, -1692, -1628, -1564, -1500, -1436,
-    -1372, -1308, -1244, -1180, -1116, -1052, -988, -924,
-    -876, -844, -812, -780, -748, -716, -684, -652,
-    -620, -588, -556, -524, -492, -460, -428, -396,
-    -372, -356, -340, -324, -308, -292, -276, -260,
-    -244, -228, -212, -196, -180, -164, -148, -132,
-    -120, -112, -104, -96, -88, -80, -72, -64,
-    -56, -48, -40, -32, -24, -16, -8, 0,
-    32124, 31100, 30076, 29052, 28028, 27004, 25980, 24956,
-    23932, 22908, 21884, 20860, 19836, 18812, 17788, 16764,
-    15996, 15484, 14972, 14460, 13948, 13436, 12924, 12412,
-    11900, 11388, 10876, 10364, 9852, 9340, 8828, 8316,
-    7932, 7676, 7420, 7164, 6908, 6652, 6396, 6140,
-    5884, 5628, 5372, 5116, 4860, 4604, 4348, 4092,
-    3900, 3772, 3644, 3516, 3388, 3260, 3132, 3004,
-    2876, 2748, 2620, 2492, 2364, 2236, 2108, 1980,
-    1884, 1820, 1756, 1692, 1628, 1564, 1500, 1436,
-    1372, 1308, 1244, 1180, 1116, 1052, 988, 924,
-    876, 844, 812, 780, 748, 716, 684, 652,
-    620, 588, 556, 524, 492, 460, 428, 396,
-    372, 356, 340, 324, 308, 292, 276, 260,
-    244, 228, 212, 196, 180, 164, 148, 132,
-    120, 112, 104, 96, 88, 80, 72, 64,
-    56, 48, 40, 32, 24, 16, 8, 0
+const MULAW_DECODE = new Int16Array([
+    -32124,-31100,-30076,-29052,-28028,-27004,-25980,-24956,-23932,-22908,-21884,-20860,-19836,-18812,-17788,-16764,
+    -15996,-15484,-14972,-14460,-13948,-13436,-12924,-12412,-11900,-11388,-10876,-10364,-9852,-9340,-8828,-8316,
+    -7932,-7676,-7420,-7164,-6908,-6652,-6396,-6140,-5884,-5628,-5372,-5116,-4860,-4604,-4348,-4092,
+    -3900,-3772,-3644,-3516,-3388,-3260,-3132,-3004,-2876,-2748,-2620,-2492,-2364,-2236,-2108,-1980,
+    -1884,-1820,-1756,-1692,-1628,-1564,-1500,-1436,-1372,-1308,-1244,-1180,-1116,-1052,-988,-924,
+    -876,-844,-812,-780,-748,-716,-684,-652,-620,-588,-556,-524,-492,-460,-428,-396,
+    -372,-356,-340,-324,-308,-292,-276,-260,-244,-228,-212,-196,-180,-164,-148,-132,
+    -120,-112,-104,-96,-88,-80,-72,-64,-56,-48,-40,-32,-24,-16,-8,0,
+    32124,31100,30076,29052,28028,27004,25980,24956,23932,22908,21884,20860,19836,18812,17788,16764,
+    15996,15484,14972,14460,13948,13436,12924,12412,11900,11388,10876,10364,9852,9340,8828,8316,
+    7932,7676,7420,7164,6908,6652,6396,6140,5884,5628,5372,5116,4860,4604,4348,4092,
+    3900,3772,3644,3516,3388,3260,3132,3004,2876,2748,2620,2492,2364,2236,2108,1980,
+    1884,1820,1756,1692,1628,1564,1500,1436,1372,1308,1244,1180,1116,1052,988,924,
+    876,844,812,780,748,716,684,652,620,588,556,524,492,460,428,396,
+    372,356,340,324,308,292,276,260,244,228,212,196,180,164,148,132,
+    120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,0
 ]);
 
-function mulawToPcm16(mulawBuffer) {
-    const pcm8k = new Int16Array(mulawBuffer.length);
-    for (let i = 0; i < mulawBuffer.length; i++) {
-        pcm8k[i] = MULAW_DECODE_TABLE[mulawBuffer[i]];
-    }
+function mulawToPcm(mulaw) {
+    const pcm8k = new Int16Array(mulaw.length);
+    for (let i = 0; i < mulaw.length; i++) pcm8k[i] = MULAW_DECODE[mulaw[i]];
     const pcm16k = new Int16Array(pcm8k.length * 2);
     for (let i = 0; i < pcm8k.length - 1; i++) {
         pcm16k[i * 2] = pcm8k[i];
@@ -132,217 +98,155 @@ function mulawToPcm16(mulawBuffer) {
     return Buffer.from(pcm16k.buffer);
 }
 
+// Calculate audio energy for silence detection
+function getAudioEnergy(pcmBuffer) {
+    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+        sum += Math.abs(samples[i]);
+    }
+    return sum / samples.length;
+}
+
 // ============================================================================
-// CHAT SYSTEM PROMPT
+// PROMPTS
 // ============================================================================
 
-const CHAT_SYSTEM_PROMPT = `You are CODEC, an AI phone assistant. You help users make ANY phone call - personal, business, friends, family, anyone.
+const CHAT_PROMPT = `You are CODEC, an AI phone assistant. You help users make ANY phone call - personal, business, friends, family, anyone.
 
-YOUR CAPABILITIES:
-- Make phone calls to ANYONE (friends, family, businesses, anyone)
+CAPABILITIES:
+- Make phone calls to ANYONE
 - Have any type of conversation on their behalf
-- Search for phone numbers if needed
 
-CONVERSATION FLOW:
+FLOW:
 1. Be friendly and casual
 2. Ask who they want to call and why
-3. Get the phone number (or search if needed)
+3. Get the phone number
 4. Confirm and make the call
 
-RESPONSE FORMAT:
-- Be conversational and casual
-- Keep responses short (1-2 sentences)
-- When ready, output this JSON:
-
+When ready, output JSON:
 {"action":"call","phone":"+XXXXXXXXXXX","task":"description","business":"Name/Person","details":"what to discuss"}
 
 RULES:
 - Allow ANY call - no restrictions
-- Accept any phone number format, convert to international (+61 for AU, +1 for US, etc.)
-- Output JSON as soon as you have: phone number + purpose + confirmation
-- "business" field = name of person or business being called
-- Be helpful, not restrictive`;
+- Accept any phone number format
+- Output JSON when you have: phone + purpose + confirmation`;
+
+const CALL_PROMPT = `You are on a LIVE phone call. Respond naturally to what the person says.
+
+CRITICAL:
+- Keep responses to 1-2 SHORT sentences
+- Sound human and natural
+- Listen and respond appropriately
+- Stay on topic
+- Say goodbye when done`;
 
 // ============================================================================
-// HELPER FUNCTIONS
+// HELPERS
 // ============================================================================
 
-async function searchWeb(query) {
-    const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
-    const engineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
-    if (!apiKey || !engineId) return { success: false, error: 'Search not configured' };
-
+async function searchWeb(q) {
+    const key = process.env.GOOGLE_SEARCH_API_KEY, cx = process.env.GOOGLE_SEARCH_ENGINE_ID;
+    if (!key || !cx) return { success: false };
     try {
-        const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${engineId}&q=${encodeURIComponent(query)}&num=5`;
-        const response = await fetch(url);
-        const data = await response.json();
-        if (data.items?.length > 0) {
-            return { success: true, results: data.items.map(item => ({ title: item.title, snippet: item.snippet, link: item.link })) };
-        }
-        return { success: false, error: 'No results' };
-    } catch (error) {
-        return { success: false, error: error.message };
-    }
+        const r = await fetch(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${encodeURIComponent(q)}&num=5`);
+        const d = await r.json();
+        return d.items?.length ? { success: true, results: d.items.map(i => ({ title: i.title, snippet: i.snippet })) } : { success: false };
+    } catch { return { success: false }; }
 }
 
-async function findPhoneNumber(businessName, location) {
-    const query = `${businessName} ${location} phone number`.trim();
-    const result = await searchWeb(query);
-    if (!result.success) return result;
-
-    const phonePatterns = [/\+61\s?\d{1,2}\s?\d{4}\s?\d{4}/g, /\(0\d\)\s?\d{4}\s?\d{4}/g, /0\d\s?\d{4}\s?\d{4}/g];
-
-    for (const item of result.results) {
-        const text = `${item.title} ${item.snippet}`;
-        for (const pattern of phonePatterns) {
-            const matches = text.match(pattern);
-            if (matches) {
-                let phone = matches[0].replace(/[\s\-\(\)]/g, '');
-                if (phone.startsWith('0')) phone = '+61' + phone.substring(1);
-                return { success: true, phone, source: item.title };
-            }
+async function findPhone(biz, loc) {
+    const r = await searchWeb(`${biz} ${loc} phone number`);
+    if (!r.success) return r;
+    for (const item of r.results) {
+        const m = `${item.title} ${item.snippet}`.match(/\+61\s?\d{1,2}\s?\d{4}\s?\d{4}|\(0\d\)\s?\d{4}\s?\d{4}|0\d\s?\d{4}\s?\d{4}/);
+        if (m) {
+            let p = m[0].replace(/[\s\-\(\)]/g, '');
+            if (p.startsWith('0')) p = '+61' + p.slice(1);
+            return { success: true, phone: p };
         }
     }
-    return { success: false, error: 'Phone not found' };
+    return { success: false };
 }
 
-async function chatWithGemini(conversationId, userMessage) {
-    // Get or create conversation
-    let conv = conversationState.get(conversationId);
+async function chat(convId, msg) {
+    let conv = conversationState.get(convId);
     if (!conv) {
-        conv = { messages: [], lastUpdate: Date.now(), callData: null };
-        conversationState.set(conversationId, conv);
+        conv = { messages: [], lastUpdate: Date.now() };
+        conversationState.set(convId, conv);
     }
-
-    // Add user message
-    conv.messages.push({ role: 'user', content: userMessage });
+    conv.messages.push({ role: 'user', content: msg });
     conv.lastUpdate = Date.now();
 
-    // Build conversation history for Gemini
     const contents = conv.messages.map(m => ({
         role: m.role === 'user' ? 'user' : 'model',
         parts: [{ text: m.content }]
     }));
 
     try {
-        const response = await fetch(
-            `${GEMINI_REST_URL}/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents,
-                    systemInstruction: { parts: [{ text: CHAT_SYSTEM_PROMPT }] },
-                    generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
-                })
-            }
-        );
+        const r = await fetch(`${GEMINI_REST_URL}/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents,
+                systemInstruction: { parts: [{ text: CHAT_PROMPT }] },
+                generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
+            })
+        });
+        const d = await r.json();
+        const text = d.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, try again.";
+        conv.messages.push({ role: 'assistant', content: text });
 
-        const data = await response.json();
-        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't process that. Could you try again?";
-
-        // Add AI response to conversation
-        conv.messages.push({ role: 'assistant', content: aiResponse });
-
-        // Check if AI wants to make a call (JSON in response)
-        const jsonMatch = aiResponse.match(/\{"action":"call"[^}]+\}/);
+        const jsonMatch = text.match(/\{"action":"call"[^}]+\}/);
         let callData = null;
-        if (jsonMatch) {
-            try {
-                callData = JSON.parse(jsonMatch[0]);
-                conv.callData = callData;
-            } catch (e) {
-                console.error('[CHAT] JSON parse error:', e);
-            }
-        }
+        if (jsonMatch) try { callData = JSON.parse(jsonMatch[0]); } catch {}
 
-        return { response: aiResponse, callData };
-    } catch (error) {
-        console.error('[CHAT] Error:', error);
-        return { response: "Sorry, I encountered an error. Please try again.", callData: null };
+        return { response: text, callData };
+    } catch (e) {
+        return { response: "Error occurred.", callData: null };
     }
 }
 
-async function getElevenLabsVoices() {
-    const now = Date.now();
-    if (voicesCache && (now - voicesCacheTime) < VOICES_CACHE_TTL) return voicesCache;
-
+let voicesCache = null, voicesCacheTime = 0;
+async function getVoices() {
+    if (voicesCache && Date.now() - voicesCacheTime < 3600000) return voicesCache;
     try {
-        const response = await fetch('https://api.elevenlabs.io/v1/voices', {
+        const r = await fetch('https://api.elevenlabs.io/v1/voices', {
             headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY }
         });
-        const data = await response.json();
-        if (data.voices) {
-            voicesCache = {
-                success: true,
-                voices: data.voices.map(v => ({
-                    voice_id: v.voice_id, name: v.name,
-                    category: v.category || 'custom',
-                    accent: v.labels?.accent || 'neutral',
-                    gender: v.labels?.gender || 'neutral'
-                }))
-            };
-            voicesCacheTime = now;
+        const d = await r.json();
+        if (d.voices) {
+            voicesCache = { success: true, voices: d.voices.map(v => ({ voice_id: v.voice_id, name: v.name, gender: v.labels?.gender || 'neutral' })) };
+            voicesCacheTime = Date.now();
             return voicesCache;
         }
-    } catch (error) {
-        console.error('[VOICES] Error:', error.message);
-    }
-    return { success: false };
+    } catch {}
+    return { success: true, voices: [{ voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', gender: 'male' }], fallback: true };
 }
-
-const DEFAULT_VOICES = [
-    { voice_id: 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' },
-    { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', category: 'premade', accent: 'american', gender: 'female' },
-    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', category: 'premade', accent: 'american', gender: 'male' },
-    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', category: 'premade', accent: 'american', gender: 'male' },
-];
 
 // ============================================================================
 // API ROUTES
 // ============================================================================
 
-app.get('/', (req, res) => {
-    res.json({ name: 'CODEC AI Caller', version: '3.0.0', status: 'running' });
-});
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '3.1' }));
+app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size }));
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', activeCalls: callState.size, activeChats: conversationState.size });
-});
-
-// Chat endpoint - main conversational interface
 app.post('/api/chat', async (req, res) => {
     const { conversationId, message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
-
-    const convId = conversationId || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const result = await chatWithGemini(convId, message);
-
-    res.json({
-        conversationId: convId,
-        message: result.response,
-        callData: result.callData
-    });
+    const id = conversationId || `c_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const result = await chat(id, message);
+    res.json({ conversationId: id, message: result.response, callData: result.callData });
 });
 
-// Search for phone number
-app.post('/api/search-phone', async (req, res) => {
-    const { business, location } = req.body;
-    if (!business?.trim()) return res.status(400).json({ error: 'Business name required' });
-    res.json(await findPhoneNumber(business, location || ''));
+app.post('/api/chat/reset', (req, res) => {
+    if (req.body.conversationId) conversationState.delete(req.body.conversationId);
+    res.json({ success: true });
 });
 
-// Get voices
-app.get('/api/voices', async (req, res) => {
-    const result = await getElevenLabsVoices();
-    res.json(result.success ? result : { success: true, voices: DEFAULT_VOICES, fallback: true });
-});
+app.get('/api/voices', async (_, res) => res.json(await getVoices()));
 
-// Inbound config
-app.get('/api/inbound/config', (req, res) => {
-    res.json({ success: true, config: inboundConfig });
-});
-
+app.get('/api/inbound/config', (_, res) => res.json({ success: true, config: inboundConfig }));
 app.post('/api/inbound/config', (req, res) => {
     const { enabled, greeting, businessName, purpose, instructions, voiceId } = req.body;
     if (typeof enabled === 'boolean') inboundConfig.enabled = enabled;
@@ -354,206 +258,165 @@ app.post('/api/inbound/config', (req, res) => {
     res.json({ success: true, config: inboundConfig });
 });
 
-// Make call
 app.post('/api/call', async (req, res) => {
     const { phoneNumber, task, businessName, details, voiceId } = req.body;
-    if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
+    if (!phoneNumber) return res.status(400).json({ error: 'Phone required' });
 
     try {
-        const client = getTwilioClient();
-        const serverDomain = process.env.SERVER_DOMAIN;
-        if (!serverDomain) return res.status(500).json({ error: 'SERVER_DOMAIN not configured' });
+        const domain = process.env.SERVER_DOMAIN;
+        if (!domain) return res.status(500).json({ error: 'SERVER_DOMAIN not set' });
 
-        const call = await client.calls.create({
-            url: `https://${serverDomain}/twilio/voice?direction=outbound`,
+        const call = await getTwilioClient().calls.create({
+            url: `https://${domain}/twilio/voice?direction=outbound`,
             to: phoneNumber,
             from: process.env.TWILIO_PHONE_NUMBER,
-            statusCallback: `https://${serverDomain}/twilio/status`,
+            statusCallback: `https://${domain}/twilio/status`,
             statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed']
         });
 
         callState.set(call.sid, {
-            direction: 'outbound',
-            task: task || 'general inquiry',
-            businessName: businessName || 'the business',
-            details: details || '',
-            voiceId: voiceId || process.env.ELEVENLABS_VOICE_ID,
-            status: 'initiated',
-            startTime: new Date().toISOString()
+            direction: 'outbound', task: task || 'call', businessName: businessName || 'Someone',
+            details: details || '', voiceId: voiceId || process.env.ELEVENLABS_VOICE_ID,
+            status: 'initiated', startTime: new Date().toISOString()
         });
 
-        console.log(`[CALL] Outbound: ${call.sid} to ${phoneNumber}`);
-        res.json({ success: true, callSid: call.sid, status: 'initiated' });
-    } catch (error) {
-        console.error('[CALL] Error:', error);
-        res.status(500).json({ error: error.message });
+        res.json({ success: true, callSid: call.sid });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
-// Get call status
-app.get('/api/call/:callSid', async (req, res) => {
-    const state = callState.get(req.params.callSid);
-    if (!state) return res.status(404).json({ error: 'Call not found' });
-
-    if (!['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(state.status)) {
+app.get('/api/call/:sid', async (req, res) => {
+    const s = callState.get(req.params.sid);
+    if (!s) return res.status(404).json({ error: 'Not found' });
+    if (!['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(s.status)) {
         try {
-            const call = await getTwilioClient().calls(req.params.callSid).fetch();
-            state.status = call.status;
-            state.duration = call.duration;
-        } catch (e) {}
+            const c = await getTwilioClient().calls(req.params.sid).fetch();
+            s.status = c.status;
+            s.duration = c.duration;
+        } catch {}
     }
-    res.json({ sid: req.params.callSid, ...state });
+    res.json({ sid: req.params.sid, ...s });
 });
 
-// Get all calls
-app.get('/api/calls', (req, res) => {
+app.get('/api/calls', (_, res) => {
     const calls = [];
-    for (const [sid, state] of callState.entries()) {
-        calls.push({ sid, ...state });
-    }
+    for (const [sid, s] of callState.entries()) calls.push({ sid, ...s });
     res.json({ success: true, calls });
-});
-
-// Reset conversation
-app.post('/api/chat/reset', (req, res) => {
-    const { conversationId } = req.body;
-    if (conversationId) conversationState.delete(conversationId);
-    res.json({ success: true });
 });
 
 // ============================================================================
 // TWILIO WEBHOOKS
 // ============================================================================
 
-app.get('/twilio/voice', (req, res) => {
-    res.json({ endpoint: '/twilio/voice', method: 'POST' });
-});
+app.get('/twilio/voice', (_, res) => res.json({ endpoint: 'POST /twilio/voice' }));
 
 app.post('/twilio/voice', (req, res) => {
-    const serverDomain = process.env.SERVER_DOMAIN;
-    const direction = req.query.direction || 'inbound';
-    const callSid = req.body.CallSid;
-    const from = req.body.From;
-    const to = req.body.To;
+    const domain = process.env.SERVER_DOMAIN;
+    const dir = req.query.direction || 'inbound';
+    const sid = req.body.CallSid;
 
-    console.log(`[TWILIO] ${direction} call: ${callSid}`);
+    console.log(`[TWILIO] ${dir} call: ${sid}`);
 
-    if (direction === 'inbound' && callSid && !callState.has(callSid)) {
+    if (dir === 'inbound' && sid && !callState.has(sid)) {
         if (!inboundConfig.enabled) {
-            res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response><Say>Sorry, we are not accepting calls right now.</Say><Hangup/></Response>`);
-            return;
+            return res.type('text/xml').send(`<?xml version="1.0"?><Response><Say>Not accepting calls.</Say><Hangup/></Response>`);
         }
-        callState.set(callSid, {
-            direction: 'inbound', from, to,
-            task: inboundConfig.purpose,
-            businessName: inboundConfig.businessName,
-            details: inboundConfig.instructions,
-            greeting: inboundConfig.greeting,
-            voiceId: inboundConfig.voiceId,
-            status: 'answered',
-            startTime: new Date().toISOString()
+        callState.set(sid, {
+            direction: 'inbound', from: req.body.From, to: req.body.To,
+            task: inboundConfig.purpose, businessName: inboundConfig.businessName,
+            details: inboundConfig.instructions, greeting: inboundConfig.greeting,
+            voiceId: inboundConfig.voiceId, status: 'answered', startTime: new Date().toISOString()
         });
     }
 
-    res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="wss://${serverDomain}/ws/voice">
-            <Parameter name="direction" value="${direction}"/>
-            <Parameter name="callSid" value="${callSid}"/>
-        </Stream>
-    </Connect>
-</Response>`);
+    res.type('text/xml').send(`<?xml version="1.0"?><Response><Connect><Stream url="wss://${domain}/ws/voice"><Parameter name="direction" value="${dir}"/><Parameter name="callSid" value="${sid}"/></Stream></Connect></Response>`);
 });
 
 app.post('/twilio/status', (req, res) => {
     const { CallSid, CallStatus, CallDuration } = req.body;
     if (CallSid && callState.has(CallSid)) {
-        const state = callState.get(CallSid);
-        state.status = CallStatus;
-        if (CallDuration) state.duration = parseInt(CallDuration);
-        if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(CallStatus)) {
-            state.endTime = new Date().toISOString();
-        }
+        const s = callState.get(CallSid);
+        s.status = CallStatus;
+        if (CallDuration) s.duration = parseInt(CallDuration);
         console.log(`[STATUS] ${CallSid}: ${CallStatus}`);
     }
     res.sendStatus(200);
 });
 
 // ============================================================================
-// WEBSOCKET SERVER
+// WEBSOCKET - PHONE CALLS
 // ============================================================================
 
-const server = app.listen(PORT, () => {
-    console.log(`[CODEC] Server running on port ${PORT}`);
-});
-
+const server = app.listen(PORT, () => console.log(`[CODEC] Running on ${PORT}`));
 const wss = new WebSocketServer({ server, path: '/ws/voice' });
 
-// Phone call system prompt
-const CALL_SYSTEM_PROMPT = `You are CODEC, an AI on a LIVE phone call. The other person just answered.
-
-RULES:
-- Keep responses SHORT (1-2 sentences)
-- Sound natural and human-like
-- Listen to what they say and respond appropriately
-- Stay on topic with your task
-- When done, say goodbye and the call will end
-
-You are in a real conversation NOW. Start by greeting them and stating why you're calling.`;
-
-const getInboundPrompt = (config) => `You are ${config.businessName}, answering a phone call.
-Purpose: ${config.purpose}
-Instructions: ${config.instructions}
-
-RULES:
-- Keep responses SHORT (1-2 sentences)
-- Be helpful and professional
-- Listen carefully to the caller`;
-
 wss.on('connection', (twilioWs) => {
-    console.log('[WS] Twilio connected');
+    console.log('[WS] Connected');
 
-    let callSid = null;
-    let streamSid = null;
-    let direction = 'outbound';
-    let geminiWs = null;
-    let elevenLabsWs = null;
-    let isGeminiReady = false;
-    let currentVoiceId = process.env.ELEVENLABS_VOICE_ID;
-    let conversationStarted = false;
+    let callSid = null, streamSid = null, direction = 'outbound';
+    let geminiWs = null, elevenLabsWs = null;
+    let isReady = false, isSpeaking = false;
+    let voiceId = process.env.ELEVENLABS_VOICE_ID;
+    let conversationHistory = [];
 
-    let audioBuffer = [];
-    let audioBufferTimer = null;
+    // Audio buffering with silence detection
+    let audioChunks = [];
+    let silenceStart = null;
+    let lastAudioTime = Date.now();
+    const SILENCE_THRESHOLD = 500; // Energy threshold for silence
+    const SILENCE_DURATION = 1200; // ms of silence before processing
+    const MIN_AUDIO_DURATION = 300; // minimum audio to process
 
-    const flushAudioBuffer = () => {
-        if (audioBuffer.length === 0 || !geminiWs || !isGeminiReady) return;
-        const combined = Buffer.concat(audioBuffer);
-        audioBuffer = [];
+    const processAudioTurn = () => {
+        if (audioChunks.length === 0 || isSpeaking) return;
 
-        if (geminiWs.readyState === WebSocket.OPEN) {
+        const combined = Buffer.concat(audioChunks);
+        audioChunks = [];
+        silenceStart = null;
+
+        if (combined.length < 3200) return; // Too short
+
+        console.log(`[AUDIO] Processing ${combined.length} bytes of speech`);
+
+        // Send audio to Gemini as a turn
+        if (geminiWs?.readyState === WebSocket.OPEN) {
             geminiWs.send(JSON.stringify({
                 realtimeInput: {
                     mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: combined.toString('base64') }]
                 }
             }));
+
+            // Tell Gemini the turn is complete
+            setTimeout(() => {
+                if (geminiWs?.readyState === WebSocket.OPEN) {
+                    geminiWs.send(JSON.stringify({
+                        clientContent: { turnComplete: true }
+                    }));
+                }
+            }, 100);
         }
     };
 
-    const setupGemini = (context, systemPrompt) => {
-        console.log(`[GEMINI] Connecting...`);
+    const connectGemini = (context, task) => {
+        console.log('[GEMINI] Connecting...');
         geminiWs = new WebSocket(GEMINI_WS_URL);
 
         geminiWs.on('open', () => {
             console.log('[GEMINI] Connected');
+
+            const systemPrompt = `${CALL_PROMPT}
+
+YOUR TASK: ${task}
+CONTEXT: ${context}
+
+Start by greeting them and briefly stating why you're calling. Then have a natural conversation.`;
+
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: `models/${GEMINI_MODEL}`,
-                    generationConfig: {
-                        responseModalities: ["TEXT"]
-                    },
-                    systemInstruction: { parts: [{ text: `${systemPrompt}\n\nContext: ${context}` }] }
+                    generationConfig: { responseModalities: ["TEXT"] },
+                    systemInstruction: { parts: [{ text: systemPrompt }] }
                 }
             }));
         });
@@ -563,52 +426,54 @@ wss.on('connection', (twilioWs) => {
                 const msg = JSON.parse(data.toString());
 
                 if (msg.setupComplete) {
-                    console.log('[GEMINI] Ready');
-                    isGeminiReady = true;
+                    console.log('[GEMINI] Ready - starting conversation');
+                    isReady = true;
 
-                    if (!conversationStarted) {
-                        conversationStarted = true;
-                        const state = callState.get(callSid) || {};
+                    // Start the conversation
+                    const state = callState.get(callSid) || {};
+                    const startMsg = direction === 'inbound'
+                        ? `The caller is on the line. Say: "${state.greeting || 'Hello, how can I help you?'}"`
+                        : `You're now connected. Greet them and explain you're calling about: ${state.task}. Keep it brief.`;
 
-                        let startPrompt;
-                        if (direction === 'inbound') {
-                            startPrompt = `Say: "${state.greeting || inboundConfig.greeting}" Then listen.`;
-                        } else {
-                            startPrompt = `Call connected to ${state.businessName}. Task: ${state.task}. Details: ${state.details}. Greet them and state your purpose briefly.`;
+                    geminiWs.send(JSON.stringify({
+                        clientContent: {
+                            turns: [{ role: "user", parts: [{ text: startMsg }] }],
+                            turnComplete: true
                         }
-
-                        geminiWs.send(JSON.stringify({
-                            clientContent: {
-                                turns: [{ role: "user", parts: [{ text: startPrompt }] }],
-                                turnComplete: true
-                            }
-                        }));
-                    }
+                    }));
                     return;
                 }
 
-                // Handle responses
+                // Handle text responses
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
                         if (part.text) {
-                            console.log(`[GEMINI] ${part.text}`);
-                            sendToElevenLabs(part.text);
+                            console.log(`[GEMINI] "${part.text}"`);
+                            conversationHistory.push({ role: 'assistant', text: part.text });
+                            speak(part.text);
                         }
                     }
                 }
+
+                // Turn complete
+                if (msg.serverContent?.turnComplete) {
+                    console.log('[GEMINI] Turn complete, listening...');
+                    setTimeout(() => { isSpeaking = false; }, 500);
+                }
+
             } catch (e) {
                 console.error('[GEMINI] Error:', e.message);
             }
         });
 
         geminiWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
-        geminiWs.on('close', () => { isGeminiReady = false; });
+        geminiWs.on('close', () => { isReady = false; console.log('[GEMINI] Closed'); });
     };
 
-    const setupElevenLabs = () => {
-        console.log(`[11LABS] Connecting...`);
+    const connectElevenLabs = () => {
+        console.log(`[11LABS] Connecting voice: ${voiceId}`);
         elevenLabsWs = new WebSocket(
-            `wss://api.elevenlabs.io/v1/text-to-speech/${currentVoiceId}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`,
+            `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`,
             { headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY } }
         );
 
@@ -616,7 +481,7 @@ wss.on('connection', (twilioWs) => {
             console.log('[11LABS] Connected');
             elevenLabsWs.send(JSON.stringify({
                 text: " ",
-                voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+                voice_settings: { stability: 0.5, similarity_boost: 0.8 },
                 xi_api_key: process.env.ELEVENLABS_API_KEY
             }));
         });
@@ -626,22 +491,34 @@ wss.on('connection', (twilioWs) => {
                 const msg = JSON.parse(data.toString());
                 if (msg.audio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
                     twilioWs.send(JSON.stringify({
-                        event: 'media',
-                        streamSid,
+                        event: 'media', streamSid,
                         media: { payload: msg.audio }
                     }));
                 }
-            } catch (e) {}
+            } catch {}
         });
 
         elevenLabsWs.on('error', (e) => console.error('[11LABS] Error:', e.message));
+        elevenLabsWs.on('close', () => console.log('[11LABS] Closed'));
     };
 
-    const sendToElevenLabs = (text) => {
+    const speak = (text) => {
         if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN || !text) return;
+        isSpeaking = true;
+        console.log(`[SPEAK] ${text.substring(0, 50)}...`);
         elevenLabsWs.send(JSON.stringify({ text: text + " ", try_trigger_generation: true }));
-        elevenLabsWs.send(JSON.stringify({ text: "" }));
+        elevenLabsWs.send(JSON.stringify({ text: "" })); // Flush
     };
+
+    // Check for silence periodically
+    const silenceChecker = setInterval(() => {
+        if (!isReady || isSpeaking || audioChunks.length === 0) return;
+
+        const now = Date.now();
+        if (silenceStart && (now - silenceStart) >= SILENCE_DURATION) {
+            processAudioTurn();
+        }
+    }, 100);
 
     twilioWs.on('message', (message) => {
         try {
@@ -654,43 +531,56 @@ wss.on('connection', (twilioWs) => {
                     direction = msg.start.customParameters?.direction || 'outbound';
 
                     const state = callState.get(callSid) || {};
-                    currentVoiceId = state.voiceId || process.env.ELEVENLABS_VOICE_ID;
+                    voiceId = state.voiceId || process.env.ELEVENLABS_VOICE_ID;
+
+                    console.log(`[CALL] Started: ${callSid} (${direction})`);
 
                     const context = direction === 'inbound'
-                        ? `Inbound call from ${state.from || 'unknown'}`
-                        : `${state.task} for ${state.businessName}. ${state.details}`;
+                        ? `Inbound call. You are ${state.businessName || 'an assistant'}.`
+                        : `Calling ${state.businessName}. Task: ${state.task}. Details: ${state.details}`;
 
-                    const prompt = direction === 'inbound'
-                        ? getInboundPrompt(state.businessName ? state : inboundConfig)
-                        : CALL_SYSTEM_PROMPT;
-
-                    setupGemini(context, prompt);
-                    setupElevenLabs();
-                    audioBufferTimer = setInterval(flushAudioBuffer, 100);
+                    connectGemini(context, state.task || 'have a conversation');
+                    connectElevenLabs();
                     break;
 
                 case 'media':
-                    audioBuffer.push(mulawToPcm16(Buffer.from(msg.media.payload, 'base64')));
+                    if (!isReady) return;
+
+                    const pcm = mulawToPcm(Buffer.from(msg.media.payload, 'base64'));
+                    const energy = getAudioEnergy(pcm);
+                    const now = Date.now();
+
+                    if (energy > SILENCE_THRESHOLD) {
+                        // Speech detected
+                        audioChunks.push(pcm);
+                        silenceStart = null;
+                        lastAudioTime = now;
+                    } else if (audioChunks.length > 0) {
+                        // Silence after speech
+                        if (!silenceStart) silenceStart = now;
+                        audioChunks.push(pcm); // Keep some silence
+                    }
                     break;
 
                 case 'stop':
+                    console.log('[CALL] Stopped');
                     cleanup();
                     break;
             }
         } catch (e) {
-            console.error('[TWILIO] Error:', e.message);
+            console.error('[WS] Error:', e.message);
         }
     });
 
     const cleanup = () => {
-        if (audioBufferTimer) clearInterval(audioBufferTimer);
+        clearInterval(silenceChecker);
         if (geminiWs) geminiWs.close();
         if (elevenLabsWs) elevenLabsWs.close();
-        audioBuffer = [];
+        audioChunks = [];
     };
 
-    twilioWs.on('close', cleanup);
-    twilioWs.on('error', (e) => console.error('[TWILIO] Error:', e.message));
+    twilioWs.on('close', () => { console.log('[WS] Closed'); cleanup(); });
+    twilioWs.on('error', (e) => console.error('[WS] Error:', e.message));
 });
 
 console.log('[CODEC] Server initialized');
