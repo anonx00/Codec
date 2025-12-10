@@ -315,7 +315,7 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.1', mode: 'Gemini Real-time Audio' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.7', mode: 'Vertex AI Native Audio' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size }));
 
 app.post('/api/chat', async (req, res) => {
