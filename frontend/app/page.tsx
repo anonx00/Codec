@@ -26,19 +26,12 @@ interface CallStatus {
   duration?: number;
 }
 
-interface Voice {
-  voice_id: string;
-  name: string;
-  gender: string;
-}
-
 interface InboundConfig {
   enabled: boolean;
   greeting: string;
   businessName: string;
   purpose: string;
   instructions: string;
-  voiceId: string;
 }
 
 type View = 'chat' | 'calling' | 'settings';
@@ -51,36 +44,30 @@ export default function Home() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [pendingCall, setPendingCall] = useState<CallData | null>(null);
   const [callStatus, setCallStatus] = useState<CallStatus | null>(null);
-  const [voices, setVoices] = useState<Voice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<string>('');
   const [inboundConfig, setInboundConfig] = useState<InboundConfig>({
     enabled: true,
     greeting: 'Hello, thank you for calling. How can I help you today?',
     businessName: 'CODEC AI Assistant',
     purpose: 'general assistance',
-    instructions: 'Be helpful, professional, and concise.',
-    voiceId: ''
+    instructions: 'Be helpful, professional, and concise.'
   });
   const [configSaved, setConfigSaved] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize with greeting
+  // Initialize
   useEffect(() => {
-    fetchVoices();
     fetchInboundConfig();
-
-    // Add initial greeting
     setMessages([{
       id: 'welcome',
       role: 'assistant',
-      content: "Hey! I'm CODEC, your AI phone assistant. I can make calls to restaurants, hotels, or any business on your behalf. What would you like me to help you with today?",
+      content: "Hey! I'm CODEC, your AI phone assistant. I can make calls to anyone on your behalf - restaurants, businesses, friends, family. Who would you like me to call?",
       timestamp: new Date()
     }]);
   }, []);
 
-  // Auto-scroll to bottom
+  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -96,14 +83,13 @@ export default function Home() {
 
           if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(data.status)) {
             clearInterval(interval);
-            // Add completion message
             setTimeout(() => {
               setMessages(prev => [...prev, {
                 id: `call-done-${Date.now()}`,
                 role: 'system',
                 content: data.status === 'completed'
-                  ? `Call completed! Duration: ${data.duration || 0} seconds. Is there anything else you'd like me to help with?`
-                  : `Call ended with status: ${data.status}. Would you like me to try again?`,
+                  ? `Call completed! Duration: ${data.duration || 0} seconds. Anything else?`
+                  : `Call ended: ${data.status}. Want me to try again?`,
                 timestamp: new Date()
               }]);
               setView('chat');
@@ -114,33 +100,15 @@ export default function Home() {
           console.error('Status poll error:', err);
         }
       }, 2000);
-
       return () => clearInterval(interval);
     }
   }, [view, callStatus?.sid]);
-
-  const fetchVoices = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/voices`);
-      const data = await res.json();
-      if (data.success && data.voices) {
-        setVoices(data.voices);
-        if (data.voices.length > 0) {
-          setSelectedVoice(data.voices[0].voice_id);
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching voices:', err);
-    }
-  };
 
   const fetchInboundConfig = async () => {
     try {
       const res = await fetch(`${API_URL}/api/inbound/config`);
       const data = await res.json();
-      if (data.success && data.config) {
-        setInboundConfig(data.config);
-      }
+      if (data.success && data.config) setInboundConfig(data.config);
     } catch (err) {
       console.error('Error fetching config:', err);
     }
@@ -181,37 +149,31 @@ export default function Home() {
       const res = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId,
-          message: userMessage.content
-        })
+        body: JSON.stringify({ conversationId, message: userMessage.content })
       });
 
       const data = await res.json();
       setConversationId(data.conversationId);
 
-      // Clean the response (remove JSON if present)
       let cleanContent = data.message;
       if (data.callData) {
         cleanContent = cleanContent.replace(/\{"action":"call"[^}]+\}/g, '').trim();
         setPendingCall(data.callData);
       }
 
-      const aiMessage: Message = {
+      setMessages(prev => [...prev, {
         id: `ai-${Date.now()}`,
         role: 'assistant',
-        content: cleanContent || "I'm ready to make that call for you!",
+        content: cleanContent || "Ready to make that call!",
         timestamp: new Date(),
         callData: data.callData
-      };
-
-      setMessages(prev => [...prev, aiMessage]);
+      }]);
     } catch (err) {
       console.error('Chat error:', err);
       setMessages(prev => [...prev, {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: "Sorry, I had trouble connecting. Please try again.",
+        content: "Sorry, connection issue. Try again.",
         timestamp: new Date()
       }]);
     } finally {
@@ -222,7 +184,6 @@ export default function Home() {
 
   const makeCall = async () => {
     if (!pendingCall) return;
-
     setIsLoading(true);
 
     try {
@@ -233,8 +194,7 @@ export default function Home() {
           phoneNumber: pendingCall.phone,
           task: pendingCall.task,
           businessName: pendingCall.business,
-          details: pendingCall.details,
-          voiceId: selectedVoice
+          details: pendingCall.details
         })
       });
 
@@ -253,7 +213,7 @@ export default function Home() {
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
           role: 'assistant',
-          content: `Couldn't make the call: ${data.error}. Would you like to try a different number?`,
+          content: `Couldn't make the call: ${data.error}`,
           timestamp: new Date()
         }]);
       }
@@ -262,11 +222,29 @@ export default function Home() {
       setMessages(prev => [...prev, {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: "Sorry, I couldn't connect the call. Please try again.",
+        content: "Connection failed. Try again.",
         timestamp: new Date()
       }]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const hangupCall = async () => {
+    if (!callStatus?.sid) return;
+    try {
+      await fetch(`${API_URL}/api/call/${callStatus.sid}/hangup`, { method: 'POST' });
+      setMessages(prev => [...prev, {
+        id: `hangup-${Date.now()}`,
+        role: 'system',
+        content: 'Call ended. Anything else?',
+        timestamp: new Date()
+      }]);
+      setView('chat');
+      setPendingCall(null);
+      setCallStatus(null);
+    } catch (err) {
+      console.error('Hangup error:', err);
     }
   };
 
@@ -285,16 +263,9 @@ export default function Home() {
     setMessages([{
       id: 'welcome-new',
       role: 'assistant',
-      content: "Starting fresh! What would you like me to help you with?",
+      content: "Fresh start! What can I help you with?",
       timestamp: new Date()
     }]);
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
   };
 
   return (
@@ -396,26 +367,6 @@ export default function Home() {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">AI Voice</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {voices.slice(0, 4).map((voice) => (
-                    <button
-                      key={voice.voice_id}
-                      onClick={() => setInboundConfig({ ...inboundConfig, voiceId: voice.voice_id })}
-                      className={`p-3 rounded-lg border transition-all ${
-                        inboundConfig.voiceId === voice.voice_id
-                          ? 'border-indigo-500 bg-indigo-600/20'
-                          : 'border-slate-600 hover:border-slate-500'
-                      }`}
-                    >
-                      <div className="font-medium text-white">{voice.name}</div>
-                      <div className="text-xs text-slate-400">{voice.gender}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               {configSaved && (
                 <div className="p-3 bg-green-600/20 border border-green-500 rounded-lg text-green-400">
                   Settings saved!
@@ -457,29 +408,11 @@ export default function Home() {
             </div>
 
             <p className="text-sm text-slate-500 mb-6">
-              I&apos;m handling the conversation for you...
+              I&apos;m handling the conversation...
             </p>
 
-            {/* End Call Button */}
             <button
-              onClick={async () => {
-                if (callStatus?.sid) {
-                  try {
-                    await fetch(`${API_URL}/api/call/${callStatus.sid}/hangup`, { method: 'POST' });
-                    setMessages(prev => [...prev, {
-                      id: `hangup-${Date.now()}`,
-                      role: 'system',
-                      content: 'Call ended by you. Is there anything else you need?',
-                      timestamp: new Date()
-                    }]);
-                    setView('chat');
-                    setPendingCall(null);
-                    setCallStatus(null);
-                  } catch (err) {
-                    console.error('Hangup error:', err);
-                  }
-                }
-              }}
+              onClick={hangupCall}
               className="px-8 py-3 bg-red-600 text-white font-medium rounded-full hover:bg-red-700 transition-colors flex items-center gap-2 mx-auto"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -494,7 +427,6 @@ export default function Home() {
       {/* Chat View */}
       {view === 'chat' && (
         <>
-          {/* Messages */}
           <div className="flex-1 overflow-auto p-4 space-y-4">
             {messages.map((msg) => (
               <div
@@ -512,12 +444,11 @@ export default function Home() {
                 >
                   <p className="whitespace-pre-wrap">{msg.content}</p>
 
-                  {/* Call confirmation card */}
                   {msg.callData && (
                     <div className="mt-3 p-3 bg-slate-900/50 rounded-lg border border-slate-600">
                       <div className="text-sm space-y-1">
                         <div className="flex justify-between">
-                          <span className="text-slate-400">Business:</span>
+                          <span className="text-slate-400">To:</span>
                           <span className="text-white">{msg.callData.business}</span>
                         </div>
                         <div className="flex justify-between">
@@ -525,14 +456,9 @@ export default function Home() {
                           <span className="text-white">{msg.callData.phone}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-slate-400">Task:</span>
+                          <span className="text-slate-400">Purpose:</span>
                           <span className="text-white capitalize">{msg.callData.task}</span>
                         </div>
-                        {msg.callData.details && (
-                          <div className="pt-1 border-t border-slate-700">
-                            <span className="text-slate-400 text-xs">{msg.callData.details}</span>
-                          </div>
-                        )}
                       </div>
                     </div>
                   )}
@@ -555,7 +481,7 @@ export default function Home() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Call Action Button */}
+          {/* Call Action */}
           {pendingCall && (
             <div className="px-4 pb-2">
               <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
@@ -564,15 +490,6 @@ export default function Home() {
                     <div className="font-medium text-white">{pendingCall.business}</div>
                     <div className="text-sm text-slate-400">{pendingCall.phone}</div>
                   </div>
-                  <select
-                    value={selectedVoice}
-                    onChange={(e) => setSelectedVoice(e.target.value)}
-                    className="bg-slate-700 text-white text-sm rounded-lg px-3 py-2 border border-slate-600"
-                  >
-                    {voices.map((v) => (
-                      <option key={v.voice_id} value={v.voice_id}>{v.name}</option>
-                    ))}
-                  </select>
                 </div>
                 <button
                   onClick={makeCall}
@@ -596,9 +513,9 @@ export default function Home() {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), sendMessage())}
                 placeholder="Type your message..."
-                className="flex-1 px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className="flex-1 px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 disabled={isLoading}
               />
               <button
