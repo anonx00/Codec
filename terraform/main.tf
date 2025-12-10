@@ -40,17 +40,24 @@ resource "google_project_service" "apis" {
 }
 
 # Service account for Cloud Run
+# Use existing service account if provided, otherwise create new one
 resource "google_service_account" "codec_backend" {
+  count        = var.existing_service_account_email == "" ? 1 : 0
   account_id   = "codec-backend-sa"
   display_name = "CODEC Backend Service Account"
   description  = "Service account for CODEC AI Caller backend"
 }
 
-# Grant Secret Manager access to service account
+locals {
+  service_account_email = var.existing_service_account_email != "" ? var.existing_service_account_email : google_service_account.codec_backend[0].email
+}
+
+# Grant Secret Manager access to service account (only if we created it)
 resource "google_project_iam_member" "secret_accessor" {
+  count   = var.existing_service_account_email == "" ? 1 : 0
   project = var.project_id
   role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.codec_backend.email}"
+  member  = "serviceAccount:${local.service_account_email}"
 }
 
 # Data source for project number

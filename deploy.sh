@@ -73,6 +73,17 @@ REGION="australia-southeast1"
 echo ""
 echo -e "${GREEN}Using region: $REGION (Australia)${NC}"
 
+# Optional: Use existing service account
+echo ""
+echo -e "${YELLOW}SERVICE ACCOUNT (Optional)${NC}"
+echo "Leave empty to create a new service account, or enter existing email"
+read -p "Existing Service Account Email []: " EXISTING_SA
+EXISTING_SA=${EXISTING_SA:-""}
+if [ -n "$EXISTING_SA" ]; then
+    echo -e "${GREEN}Will use existing service account: $EXISTING_SA${NC}"
+    echo -e "${YELLOW}Ensure it has 'Secret Manager Secret Accessor' role assigned${NC}"
+fi
+
 # Collect API credentials
 echo ""
 echo "═══════════════════════════════════════════════════════════"
@@ -146,6 +157,9 @@ cd terraform
 cat > terraform.tfvars << EOF
 project_id = "$PROJECT_ID"
 region     = "$REGION"
+
+# Service Account (empty = create new)
+existing_service_account_email = "$EXISTING_SA"
 
 # Twilio
 twilio_account_sid  = "$TWILIO_SID"

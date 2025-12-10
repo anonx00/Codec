@@ -5,6 +5,10 @@
 project_id = "your-gcp-project-id"
 region     = "australia-southeast1"
 
+# Service Account (optional - leave empty to create new)
+# If using existing, ensure it has "Secret Manager Secret Accessor" role
+existing_service_account_email = ""
+
 # Twilio Credentials
 twilio_account_sid  = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 twilio_auth_token   = "your-twilio-auth-token"

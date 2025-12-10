@@ -5,6 +5,12 @@ variable "project_id" {
   type        = string
 }
 
+variable "existing_service_account_email" {
+  description = "Email of an existing service account to use (leave empty to create new)"
+  type        = string
+  default     = ""
+}
+
 variable "region" {
   description = "GCP Region for deployment"
   type        = string

@@ -17,7 +17,7 @@ output "twilio_webhook_url" {
 
 output "service_account_email" {
   description = "Service account email for the backend"
-  value       = google_service_account.codec_backend.email
+  value       = local.service_account_email
 }
 
 output "project_number" {

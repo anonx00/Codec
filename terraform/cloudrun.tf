@@ -7,7 +7,7 @@ resource "google_cloud_run_v2_service" "backend" {
   project  = var.project_id
 
   template {
-    service_account = google_service_account.codec_backend.email
+    service_account = local.service_account_email
 
     scaling {
       min_instance_count = 0
