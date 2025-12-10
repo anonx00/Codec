@@ -104,7 +104,7 @@ variable "backend_max_instances" {
 variable "frontend_memory" {
   description = "Memory allocation for frontend"
   type        = string
-  default     = "256Mi"
+  default     = "512Mi"
 }
 
 variable "frontend_max_instances" {
