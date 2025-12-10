@@ -321,6 +321,22 @@ async function getElevenLabsVoices() {
 // API ROUTES
 // ============================================================================
 
+// Root route
+app.get('/', (req, res) => {
+    res.json({
+        name: 'CODEC AI Caller',
+        version: '2.0.0',
+        status: 'running',
+        endpoints: {
+            health: '/health',
+            voices: '/api/voices',
+            plan: '/api/agent/plan',
+            call: '/api/call',
+            search: '/api/search'
+        }
+    });
+});
+
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -331,8 +347,38 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/voices', async (req, res) => {
-    const result = await getElevenLabsVoices();
-    res.json(result);
+    try {
+        const result = await getElevenLabsVoices();
+        if (result.success) {
+            res.json(result);
+        } else {
+            // Return default voices if API fails
+            res.json({
+                success: true,
+                voices: [
+                    { voice_id: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' },
+                    { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', category: 'premade', accent: 'american', gender: 'female' },
+                    { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi', category: 'premade', accent: 'american', gender: 'female' },
+                    { voice_id: 'MF3mGyEYCl7XYWbV9V6O', name: 'Elli', category: 'premade', accent: 'american', gender: 'female' },
+                    { voice_id: 'TxGEqnHWrfWFTfGW9XjX', name: 'Josh', category: 'premade', accent: 'american', gender: 'male' },
+                    { voice_id: 'VR6AewLTigWG4xSOukaG', name: 'Arnold', category: 'premade', accent: 'american', gender: 'male' },
+                    { voice_id: 'pNInz6obpgDQGcFmaJgB', name: 'Adam', category: 'premade', accent: 'american', gender: 'male' },
+                    { voice_id: 'yoZ06aMxZJJ28mfd3POQ', name: 'Sam', category: 'premade', accent: 'american', gender: 'male' }
+                ],
+                cached: false,
+                fallback: true
+            });
+        }
+    } catch (error) {
+        console.error('[API] Voices error:', error);
+        res.json({
+            success: true,
+            voices: [
+                { voice_id: process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL', name: 'Eric', category: 'premade', accent: 'american', gender: 'male' }
+            ],
+            fallback: true
+        });
+    }
 });
 
 app.post('/api/agent/plan', async (req, res) => {
@@ -446,6 +492,16 @@ app.get('/api/call/:callSid', async (req, res) => {
     }
 
     res.json({ sid: callSid, ...state });
+});
+
+// GET handler for browser visits
+app.get('/twilio/voice', (req, res) => {
+    res.json({
+        endpoint: '/twilio/voice',
+        method: 'POST',
+        description: 'Twilio webhook endpoint for incoming calls',
+        note: 'This endpoint only accepts POST requests from Twilio. Configure this URL in your Twilio phone number settings.'
+    });
 });
 
 app.post('/twilio/voice', (req, res) => {
