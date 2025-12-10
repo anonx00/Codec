@@ -66,7 +66,8 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.0-flash-exp';
+// Use native audio model for real-time voice
+const GEMINI_MODEL = 'gemini-2.5-flash-preview-native-audio-dialog';
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -159,10 +160,10 @@ function preEstablishGemini(sessionId, state) {
         geminiWs.on('open', () => {
             console.log(`[GEMINI] Pre-establishing for ${sessionId}`);
 
-            // Build prompt
+            // Build prompt - tell it to speak immediately when audio stream starts
             const prompt = state.direction === 'inbound'
-                ? `You're answering a call for ${state.businessName}. Say: "${state.greeting}" then help them. Be natural, brief.`
-                : `You're calling ${state.businessName} about: ${state.task}. Say hi, introduce yourself as ${state.callerName}, explain why you're calling briefly, then have a natural conversation. Be casual and human. Use an Australian accent and be calm and friendly.`;
+                ? `You're answering a phone call for ${state.businessName}. As soon as you hear the caller, greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
+                : `You're making a phone call to ${state.businessName} about: ${state.task}. As soon as you hear them pick up, immediately say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short.`;
 
             geminiWs.send(JSON.stringify({
                 setup: {
@@ -170,12 +171,15 @@ function preEstablishGemini(sessionId, state) {
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
-                        automaticActivityDetection: {}
+                        automaticActivityDetection: {
+                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_SENSITIVITY_HIGH"
+                        }
                     }
                 }
             }));
@@ -467,8 +471,8 @@ wss.on('connection', (twilioWs) => {
             console.log('[GEMINI] Fallback connected');
 
             const prompt = direction === 'inbound'
-                ? `You're answering a call for ${state.businessName}. Say: "${state.greeting}" then help them. Be natural, brief.`
-                : `You're calling ${state.businessName} about: ${state.task}. Say hi, introduce yourself as ${state.callerName}, explain why you're calling briefly, then have a natural conversation. Be casual and human. Use an Australian accent and be calm and friendly.`;
+                ? `You're answering a phone call for ${state.businessName}. As soon as you hear the caller, greet them warmly with: "${state.greeting}" then help them. Be natural and brief. Speak with a calm, friendly Australian accent.`
+                : `You're making a phone call to ${state.businessName} about: ${state.task}. As soon as you hear them pick up, immediately say "Hey! This is ${state.callerName} calling" and briefly explain why you're calling. Be casual, friendly, and natural. Speak with a calm Australian accent. Keep responses short.`;
 
             geminiWs.send(JSON.stringify({
                 setup: {
@@ -476,12 +480,15 @@ wss.on('connection', (twilioWs) => {
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
-                        automaticActivityDetection: {}
+                        automaticActivityDetection: {
+                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_SENSITIVITY_HIGH"
+                        }
                     }
                 }
             }));
@@ -495,10 +502,10 @@ wss.on('connection', (twilioWs) => {
                     console.log('[GEMINI] Fallback ready');
                     ready = true;
 
-                    // Trigger greeting
+                    // Signal we're ready - send empty audio to trigger VAD
+                    // This tells Gemini the call started and it should speak
                     geminiWs.send(JSON.stringify({
                         clientContent: {
-                            turns: [{ role: "user", parts: [{ text: "Start now." }] }],
                             turnComplete: true
                         }
                     }));
@@ -551,10 +558,9 @@ wss.on('connection', (twilioWs) => {
                     // Wire up the audio routing
                     wireGeminiToTwilio(geminiWs);
 
-                    // Immediately trigger the AI to speak - no delay!
+                    // Signal turn complete to trigger AI to speak first
                     geminiWs.send(JSON.stringify({
                         clientContent: {
-                            turns: [{ role: "user", parts: [{ text: "Start now." }] }],
                             turnComplete: true
                         }
                     }));
@@ -585,4 +591,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.2 Ready - Pre-established Gemini sessions');
+console.log('[CODEC] v5.3 Ready - Native Audio Model + Pre-established sessions');
