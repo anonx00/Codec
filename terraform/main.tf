@@ -31,6 +31,7 @@ resource "google_project_service" "apis" {
     "cloudbuild.googleapis.com",
     "artifactregistry.googleapis.com",
     "customsearch.googleapis.com",
+    "aiplatform.googleapis.com",
   ])
 
   project            = var.project_id
@@ -56,6 +57,14 @@ resource "google_project_iam_member" "secret_accessor" {
   count   = var.existing_service_account_email == "" ? 1 : 0
   project = var.project_id
   role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${local.service_account_email}"
+}
+
+# Grant Vertex AI User access for native audio model
+resource "google_project_iam_member" "vertex_ai_user" {
+  count   = var.existing_service_account_email == "" ? 1 : 0
+  project = var.project_id
+  role    = "roles/aiplatform.user"
   member  = "serviceAccount:${local.service_account_email}"
 }
 
