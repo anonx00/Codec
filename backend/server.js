@@ -66,8 +66,10 @@ setInterval(() => {
 // ============================================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-// Native audio model for true real-time voice (from docs)
-const GEMINI_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
+// Native audio model for real-time voice calls (Live API only)
+const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-09-2025';
+// Standard model for text chat (REST API)
+const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
 // Use v1alpha for native audio features (affective dialog, proactive audio)
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -169,7 +171,7 @@ function preEstablishGemini(sessionId, state) {
             // Full native audio config with all features
             geminiWs.send(JSON.stringify({
                 setup: {
-                    model: `models/${GEMINI_MODEL}`,
+                    model: `models/${GEMINI_LIVE_MODEL}`,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
@@ -243,7 +245,7 @@ async function chat(convId, msg) {
     conv.lastUpdate = Date.now();
 
     try {
-        const r = await fetch(`${GEMINI_REST_URL}/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
+        const r = await fetch(`${GEMINI_REST_URL}/models/${GEMINI_CHAT_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -499,7 +501,7 @@ wss.on('connection', (twilioWs) => {
             // Full native audio config
             geminiWs.send(JSON.stringify({
                 setup: {
-                    model: `models/${GEMINI_MODEL}`,
+                    model: `models/${GEMINI_LIVE_MODEL}`,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
