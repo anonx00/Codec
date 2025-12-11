@@ -32,6 +32,7 @@ resource "google_project_service" "apis" {
     "artifactregistry.googleapis.com",
     "customsearch.googleapis.com",
     "aiplatform.googleapis.com",
+    "speech.googleapis.com",  # Speech-to-Text for post-call transcription
   ])
 
   project            = var.project_id

@@ -35,6 +35,8 @@ const callState = new Map();
 const conversationState = new Map();
 const pendingGeminiSessions = new Map(); // Pre-established Gemini connections
 const callTranscripts = new Map(); // Store call transcripts
+const callAudioBuffers = new Map(); // Store audio for post-call transcription
+const callSummaries = new Map(); // Store AI-generated call summaries
 
 let inboundConfig = {
     enabled: true,
@@ -51,6 +53,8 @@ setInterval(() => {
         if (now - new Date(v.startTime).getTime() > 60 * 60 * 1000) {
             callState.delete(k);
             callTranscripts.delete(k);
+            callAudioBuffers.delete(k);
+            callSummaries.delete(k);
         }
     }
     for (const [k, v] of conversationState.entries()) {
@@ -98,6 +102,196 @@ async function getAccessToken() {
 // Build Vertex AI WebSocket URL
 function getVertexWsUrl(accessToken) {
     return `wss://${VERTEX_REGION}-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent?access_token=${accessToken}`;
+}
+
+// ============================================================================
+// POST-CALL TRANSCRIPTION & SUMMARY (GCP Speech-to-Text + Gemini)
+// ============================================================================
+
+// Convert mu-law 8kHz audio buffer to LINEAR16 for Speech-to-Text
+function mulawToLinear16(mulawBuffer) {
+    const pcm = new Int16Array(mulawBuffer.length);
+    for (let i = 0; i < mulawBuffer.length; i++) {
+        pcm[i] = MULAW_DECODE[mulawBuffer[i]];
+    }
+    return Buffer.from(pcm.buffer);
+}
+
+// Transcribe audio using GCP Speech-to-Text
+async function transcribeAudio(audioBuffer, sampleRate = 8000) {
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+        console.error('[STT] Failed to get access token');
+        return null;
+    }
+
+    try {
+        // Convert mu-law to LINEAR16
+        const linearAudio = mulawToLinear16(audioBuffer);
+        const audioBase64 = linearAudio.toString('base64');
+
+        console.log(`[STT] Transcribing ${audioBuffer.length} bytes of audio...`);
+
+        const response = await fetch(
+            `https://speech.googleapis.com/v1/speech:recognize`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    config: {
+                        encoding: 'LINEAR16',
+                        sampleRateHertz: sampleRate,
+                        languageCode: 'en-US',
+                        enableAutomaticPunctuation: true,
+                        model: 'phone_call',  // Optimized for phone audio
+                        useEnhanced: true
+                    },
+                    audio: { content: audioBase64 }
+                })
+            }
+        );
+
+        const data = await response.json();
+
+        if (data.error) {
+            console.error('[STT] API Error:', data.error.message);
+            return null;
+        }
+
+        if (data.results?.length) {
+            const transcript = data.results
+                .map(r => r.alternatives?.[0]?.transcript || '')
+                .filter(t => t)
+                .join(' ');
+            console.log(`[STT] Transcribed: ${transcript.substring(0, 100)}...`);
+            return transcript;
+        }
+
+        return null;
+    } catch (e) {
+        console.error('[STT] Error:', e.message);
+        return null;
+    }
+}
+
+// Generate AI summary of call transcript
+async function generateCallSummary(callSid, callerTranscript, aiTranscript, callInfo) {
+    if (!GEMINI_API_KEY) {
+        console.error('[SUMMARY] No Gemini API key');
+        return null;
+    }
+
+    const combinedTranscript = `
+CALLER SAID: ${callerTranscript || '(no audio captured)'}
+
+AI ASSISTANT SAID: ${aiTranscript || '(no audio captured)'}
+`;
+
+    const prompt = `You are analyzing a phone call transcript. Based on the conversation, provide a brief summary.
+
+CALL CONTEXT:
+- Business/Person Called: ${callInfo.businessName || 'Unknown'}
+- Purpose: ${callInfo.task || 'General inquiry'}
+- Details: ${callInfo.details || 'None provided'}
+
+TRANSCRIPT:
+${combinedTranscript}
+
+Provide a summary in this format:
+**Call Summary**
+[2-3 sentence summary of what happened in the call]
+
+**Outcome**
+[What was achieved or the result - e.g., "Reservation confirmed for 7pm", "Information gathered about hours", "Voicemail left", etc.]
+
+**Key Details**
+[Any important information from the call - times, dates, names, numbers mentioned]
+
+Keep it concise and focus on what matters to the user.`;
+
+    try {
+        console.log(`[SUMMARY] Generating summary for ${callSid}...`);
+
+        const response = await fetch(
+            `${GEMINI_REST_URL}/models/${GEMINI_CHAT_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                    generationConfig: { temperature: 0.3, maxOutputTokens: 500 }
+                })
+            }
+        );
+
+        const data = await response.json();
+        const summary = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (summary) {
+            console.log(`[SUMMARY] Generated summary for ${callSid}`);
+            return summary;
+        }
+
+        return null;
+    } catch (e) {
+        console.error('[SUMMARY] Error:', e.message);
+        return null;
+    }
+}
+
+// Process call audio after call ends
+async function processCallAudio(callSid) {
+    const audioData = callAudioBuffers.get(callSid);
+    const callInfo = callState.get(callSid);
+
+    if (!audioData || !callInfo) {
+        console.log(`[PROCESS] No audio data for ${callSid}`);
+        return;
+    }
+
+    console.log(`[PROCESS] Processing audio for ${callSid}...`);
+
+    // Mark as processing
+    callSummaries.set(callSid, { status: 'processing', summary: null });
+
+    try {
+        // Transcribe both sides
+        const [callerTranscript, aiTranscript] = await Promise.all([
+            audioData.caller.length > 0 ? transcribeAudio(Buffer.concat(audioData.caller)) : null,
+            audioData.ai.length > 0 ? transcribeAudio(Buffer.concat(audioData.ai)) : null
+        ]);
+
+        // Store raw transcripts
+        callTranscripts.set(callSid, {
+            caller: callerTranscript,
+            ai: aiTranscript
+        });
+
+        // Generate AI summary
+        const summary = await generateCallSummary(callSid, callerTranscript, aiTranscript, callInfo);
+
+        callSummaries.set(callSid, {
+            status: 'complete',
+            summary: summary || 'Unable to generate summary. The call may have been too short or unclear.',
+            callerTranscript,
+            aiTranscript
+        });
+
+        // Clean up audio buffer to save memory
+        callAudioBuffers.delete(callSid);
+
+        console.log(`[PROCESS] Summary complete for ${callSid}`);
+    } catch (e) {
+        console.error(`[PROCESS] Error processing ${callSid}:`, e.message);
+        callSummaries.set(callSid, {
+            status: 'error',
+            summary: 'Failed to process call audio.',
+            error: e.message
+        });
+    }
 }
 
 // ============================================================================
@@ -430,7 +624,7 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.8', mode: 'Vertex AI Native Audio + Agentic' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.9', mode: 'Vertex AI Native Audio + Post-Call Summary' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size }));
 
 app.post('/api/chat', async (req, res) => {
@@ -530,9 +724,16 @@ app.get('/api/call/:sid', async (req, res) => {
             s.duration = c.duration;
         } catch {}
     }
-    // Include transcript if available
-    const transcript = callTranscripts.get(req.params.sid) || [];
-    res.json({ sid: req.params.sid, ...s, transcript });
+    // Include transcript and summary if available
+    const transcript = callTranscripts.get(req.params.sid) || null;
+    const summaryData = callSummaries.get(req.params.sid) || null;
+    res.json({
+        sid: req.params.sid,
+        ...s,
+        transcript,
+        summaryStatus: summaryData?.status || null,
+        summary: summaryData?.summary || null
+    });
 });
 
 app.get('/api/calls', (_, res) => {
@@ -604,12 +805,28 @@ wss.on('connection', (twilioWs) => {
     let geminiWs = null;
     let ready = false;
 
-    // Helper to add to transcript
+    // Helper to add to transcript (kept for any text we might capture)
     const addToTranscript = (speaker, text) => {
         if (callSid && text) {
             const transcript = callTranscripts.get(callSid) || [];
             transcript.push({ speaker, text, time: new Date().toISOString() });
             callTranscripts.set(callSid, transcript);
+        }
+    };
+
+    // Helper to record audio for post-call transcription
+    const recordAudio = (source, mulawBuffer) => {
+        if (!callSid) return;
+        let audioData = callAudioBuffers.get(callSid);
+        if (!audioData) {
+            audioData = { caller: [], ai: [] };
+            callAudioBuffers.set(callSid, audioData);
+        }
+        // Limit buffer size to ~60 seconds per side (8000 bytes/sec at 8kHz mu-law)
+        const maxSize = 8000 * 60;
+        const currentSize = audioData[source].reduce((sum, b) => sum + b.length, 0);
+        if (currentSize < maxSize) {
+            audioData[source].push(mulawBuffer);
         }
     };
 
@@ -632,10 +849,13 @@ wss.on('connection', (twilioWs) => {
                         if (part.text) {
                             addToTranscript('AI', part.text);
                         }
-                        // Stream audio to Twilio
+                        // Stream audio to Twilio and record for transcription
                         if (part.inlineData?.data) {
                             const pcm = Buffer.from(part.inlineData.data, 'base64');
                             const mulaw = pcm24kToMulaw8k(pcm);
+
+                            // Record AI audio for post-call transcription
+                            recordAudio('ai', mulaw);
 
                             if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
                                 twilioWs.send(JSON.stringify({
@@ -735,6 +955,9 @@ wss.on('connection', (twilioWs) => {
                             const pcm = Buffer.from(part.inlineData.data, 'base64');
                             const mulaw = pcm24kToMulaw8k(pcm);
 
+                            // Record AI audio for post-call transcription
+                            recordAudio('ai', mulaw);
+
                             if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
                                 twilioWs.send(JSON.stringify({
                                     event: 'media',
@@ -793,8 +1016,12 @@ wss.on('connection', (twilioWs) => {
                 }
             }
             else if (msg.event === 'media' && ready && geminiWs?.readyState === WebSocket.OPEN) {
+                // Record caller audio for post-call transcription
+                const mulawBuffer = Buffer.from(msg.media.payload, 'base64');
+                recordAudio('caller', mulawBuffer);
+
                 // Stream caller audio to Gemini
-                const pcm = mulawToPcm16k(Buffer.from(msg.media.payload, 'base64'));
+                const pcm = mulawToPcm16k(mulawBuffer);
                 geminiWs.send(JSON.stringify({
                     realtimeInput: {
                         mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: pcm.toString('base64') }]
@@ -804,6 +1031,14 @@ wss.on('connection', (twilioWs) => {
             else if (msg.event === 'stop') {
                 console.log(`[CALL] ${callSid} stream stopped`);
                 if (geminiWs) geminiWs.close();
+
+                // Trigger post-call transcription and summary generation
+                if (callSid && callAudioBuffers.has(callSid)) {
+                    console.log(`[CALL] Starting post-call processing for ${callSid}`);
+                    processCallAudio(callSid).catch(e => {
+                        console.error(`[CALL] Post-call processing failed:`, e.message);
+                    });
+                }
             }
         } catch (e) {}
     });
@@ -814,4 +1049,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.8 Ready - Enhanced Agentic Voice + Transcript');
+console.log('[CODEC] v5.9 Ready - Post-Call Transcription & AI Summary');

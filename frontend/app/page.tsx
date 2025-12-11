@@ -24,6 +24,8 @@ interface CallStatus {
   sid: string;
   status: string;
   duration?: number;
+  summaryStatus?: 'processing' | 'complete' | 'error' | null;
+  summary?: string | null;
 }
 
 interface InboundConfig {
@@ -92,33 +94,52 @@ export default function Home() {
           const data = await res.json();
           setCallStatus(data);
 
-          if (['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(data.status)) {
-            clearInterval(interval);
-            setTimeout(() => {
-              // Build transcript summary if available
-              let summary = data.status === 'completed'
-                ? `Call completed! Duration: ${data.duration || 0} seconds.`
-                : `Call ended: ${data.status}.`;
+          const isCallEnded = ['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(data.status);
 
-              // Add transcript if available
-              if (data.transcript && data.transcript.length > 0) {
-                summary += '\n\n📝 **Call Summary:**\n';
-                data.transcript.forEach((t: { speaker: string; text: string }) => {
-                  summary += `**${t.speaker}:** ${t.text}\n`;
-                });
+          if (isCallEnded) {
+            // For completed calls, wait for summary to be ready
+            if (data.status === 'completed') {
+              // If summary is still processing, keep polling
+              if (data.summaryStatus === 'processing') {
+                return; // Keep polling for summary
               }
 
-              summary += '\nAnything else?';
+              // Summary is ready or there was an error
+              clearInterval(interval);
+              setTimeout(() => {
+                let content = `Call completed! Duration: ${data.duration || 0} seconds.`;
 
-              setMessages(prev => [...prev, {
-                id: `call-done-${Date.now()}`,
-                role: 'system',
-                content: summary,
-                timestamp: new Date()
-              }]);
-              setView('chat');
-              setPendingCall(null);
-            }, 1000);
+                if (data.summary) {
+                  content += `\n\n${data.summary}`;
+                } else if (data.summaryStatus === 'error') {
+                  content += '\n\n⚠️ Could not generate call summary.';
+                }
+
+                content += '\n\nAnything else I can help with?';
+
+                setMessages(prev => [...prev, {
+                  id: `call-done-${Date.now()}`,
+                  role: 'system',
+                  content,
+                  timestamp: new Date()
+                }]);
+                setView('chat');
+                setPendingCall(null);
+              }, 500);
+            } else {
+              // Call ended without completing (failed, busy, etc)
+              clearInterval(interval);
+              setTimeout(() => {
+                setMessages(prev => [...prev, {
+                  id: `call-done-${Date.now()}`,
+                  role: 'system',
+                  content: `Call ended: ${data.status}. Want me to try again?`,
+                  timestamp: new Date()
+                }]);
+                setView('chat');
+                setPendingCall(null);
+              }, 1000);
+            }
           }
         } catch (err) {
           console.error('Status poll error:', err);
@@ -433,12 +454,18 @@ export default function Home() {
             <p className="text-slate-400 mb-4">{pendingCall?.phone}</p>
 
             <div className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-full mb-6">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-slate-300 capitalize">{callStatus?.status || 'connecting'}</span>
+              <span className={`w-2 h-2 rounded-full animate-pulse ${callStatus?.summaryStatus === 'processing' ? 'bg-yellow-500' : 'bg-green-500'}`} />
+              <span className="text-slate-300 capitalize">
+                {callStatus?.summaryStatus === 'processing'
+                  ? 'Processing transcript...'
+                  : callStatus?.status || 'connecting'}
+              </span>
             </div>
 
             <p className="text-sm text-slate-500 mb-6">
-              I&apos;m handling the conversation...
+              {callStatus?.summaryStatus === 'processing'
+                ? 'Analyzing the call conversation...'
+                : "I'm handling the conversation..."}
             </p>
 
             <button

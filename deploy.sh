@@ -80,6 +80,7 @@ gcloud services enable run.googleapis.com --project="$PROJECT_ID" 2>/dev/null ||
 gcloud services enable secretmanager.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
 gcloud services enable cloudbuild.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
 gcloud services enable aiplatform.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
+gcloud services enable speech.googleapis.com --project="$PROJECT_ID" 2>/dev/null || true
 echo -e "${GREEN}Base APIs enabled${NC}"
 
 # Wait for APIs to propagate
