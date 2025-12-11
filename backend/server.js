@@ -253,7 +253,7 @@ async function preEstablishGemini(sessionId, state) {
                 setup: {
                     model: modelPath,
                     generationConfig: {
-                        responseModalities: ["AUDIO", "TEXT"],  // Request text too for transcript
+                        responseModalities: ["AUDIO"],
                         speechConfig: {
                             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
                         }
@@ -691,7 +691,7 @@ wss.on('connection', (twilioWs) => {
                 setup: {
                     model: modelPath,
                     generationConfig: {
-                        responseModalities: ["AUDIO", "TEXT"],  // Request text too for transcript
+                        responseModalities: ["AUDIO"],
                         speechConfig: {
                             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
                         }
