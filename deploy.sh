@@ -63,6 +63,11 @@ fi
 gcloud config set project "$PROJECT_ID"
 echo -e "${GREEN}Using project: $PROJECT_ID${NC}"
 
+# Set quota project for application default credentials (fixes Cloud Shell auth issues)
+echo ""
+echo -e "${YELLOW}Setting up authentication for Terraform...${NC}"
+gcloud auth application-default set-quota-project "$PROJECT_ID" 2>/dev/null || true
+
 # Enable billing check
 echo ""
 echo -e "${YELLOW}Note: Make sure billing is enabled for project $PROJECT_ID${NC}"
@@ -221,6 +226,11 @@ echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "              INITIALIZING INFRASTRUCTURE                   "
 echo "═══════════════════════════════════════════════════════════"
+
+# Export project for Terraform (fixes Cloud Shell credential issues)
+export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
+export GOOGLE_CLOUD_QUOTA_PROJECT="$PROJECT_ID"
+export CLOUDSDK_CORE_PROJECT="$PROJECT_ID"
 
 terraform init -upgrade
 
