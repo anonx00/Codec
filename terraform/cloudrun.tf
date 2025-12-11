@@ -12,6 +12,8 @@ resource "google_cloud_run_v2_service" "backend" {
     scaling {
       # Keep 1 instance warm to prevent cold start delays on voice calls
       min_instance_count = 1
+      # IMPORTANT: Keep max at 1 - app uses in-memory state for calls
+      # Multiple instances would split state and break active calls
       max_instance_count = var.backend_max_instances
     }
 
