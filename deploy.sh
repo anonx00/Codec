@@ -381,6 +381,15 @@ if [ -n "$BACKEND_URL" ]; then
 
     # Get final frontend URL
     FRONTEND_URL=$(gcloud run services describe codec-frontend --region=$REGION --format='value(status.url)')
+
+    # Update backend with frontend URL for CORS restriction
+    echo ""
+    echo -e "${YELLOW}Setting CORS restriction on backend...${NC}"
+    gcloud run services update codec-backend \
+        --region $REGION \
+        --update-env-vars "FRONTEND_URL=$FRONTEND_URL" \
+        --quiet
+    echo -e "${GREEN}CORS configured for: $FRONTEND_URL${NC}"
 fi
 
 # Print final output

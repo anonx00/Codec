@@ -10,8 +10,29 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// CORS configuration - restrict to frontend domain only
+const FRONTEND_URL = process.env.FRONTEND_URL || '';
+const ALLOWED_ORIGINS = FRONTEND_URL ? [FRONTEND_URL] : [];
+
+// In dev mode without FRONTEND_URL, allow localhost
+if (!FRONTEND_URL && process.env.NODE_ENV !== 'production') {
+    ALLOWED_ORIGINS.push('http://localhost:3000', 'http://localhost:8080');
+}
+
 app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
+    const origin = req.headers.origin;
+
+    // Check if origin is allowed
+    if (origin && ALLOWED_ORIGINS.includes(origin)) {
+        res.header("Access-Control-Allow-Origin", origin);
+        res.header("Access-Control-Allow-Credentials", "true");
+    } else if (ALLOWED_ORIGINS.length === 0) {
+        // Fallback: if no origins configured, allow all (dev mode warning)
+        console.warn('[CORS] No FRONTEND_URL configured - allowing all origins (insecure)');
+        res.header("Access-Control-Allow-Origin", "*");
+    }
+    // If origin doesn't match, don't set CORS headers (browser will block)
+
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     if (req.method === 'OPTIONS') return res.sendStatus(200);
@@ -76,7 +97,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 // ============================================================================
-// TWILIO CLIENT
+// TWILIO CLIENT & SIGNATURE VALIDATION
 // ============================================================================
 
 let twilioClient = null;
@@ -85,6 +106,43 @@ const getTwilioClient = () => {
         twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
     }
     return twilioClient;
+};
+
+// Twilio request signature validation middleware
+// Ensures requests to /twilio/* endpoints actually come from Twilio
+const validateTwilioSignature = (req, res, next) => {
+    // Skip validation in development mode (when no auth token is set)
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    if (!authToken) {
+        console.warn('[TWILIO] No auth token - skipping signature validation (dev mode)');
+        return next();
+    }
+
+    const twilioSignature = req.headers['x-twilio-signature'];
+    if (!twilioSignature) {
+        console.error('[TWILIO] Missing X-Twilio-Signature header');
+        return res.status(403).type('text/plain').send('Forbidden: Missing signature');
+    }
+
+    // Build the full URL that Twilio used to sign the request
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    const url = `${protocol}://${host}${req.originalUrl}`;
+
+    // Validate the signature using Twilio's helper
+    const isValid = twilio.validateRequest(
+        authToken,
+        twilioSignature,
+        url,
+        req.body || {}
+    );
+
+    if (!isValid) {
+        console.error('[TWILIO] Invalid signature for URL:', url);
+        return res.status(403).type('text/plain').send('Forbidden: Invalid signature');
+    }
+
+    next();
 };
 
 // ============================================================================
@@ -684,7 +742,7 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '6.0', mode: 'Vertex AI Native Audio + Auth' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '6.1', mode: 'Vertex AI Native Audio + Security' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size, sessions: activeSessions.size }));
 
 // Login endpoint - validates access code and returns session token
@@ -859,8 +917,11 @@ app.get('/api/calls', (_, res) => {
 });
 
 // ============================================================================
-// TWILIO WEBHOOKS
+// TWILIO WEBHOOKS (Protected by signature validation)
 // ============================================================================
+
+// Apply Twilio signature validation to all /twilio/* routes
+app.use('/twilio', validateTwilioSignature);
 
 app.post('/twilio/voice', (req, res) => {
     const domain = process.env.SERVER_DOMAIN;
@@ -993,8 +1054,39 @@ wss.on('connection', (twilioWs) => {
             }
         });
 
-        gWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
-        gWs.on('close', () => { ready = false; console.log('[GEMINI] Closed'); });
+        gWs.on('error', (e) => {
+            console.error('[GEMINI] Error:', e.message);
+            ready = false;
+            // Update call status to indicate AI error
+            if (callSid && callState.has(callSid)) {
+                const state = callState.get(callSid);
+                state.aiError = e.message;
+            }
+        });
+
+        gWs.on('close', (code, reason) => {
+            ready = false;
+            const reasonStr = reason?.toString() || 'unknown';
+            console.log(`[GEMINI] Closed: code=${code} reason=${reasonStr}`);
+
+            // If this was unexpected (not a normal close), log it
+            if (code !== 1000 && code !== 1001) {
+                console.warn(`[GEMINI] Unexpected disconnect for call ${callSid}`);
+                if (callSid && callState.has(callSid)) {
+                    const state = callState.get(callSid);
+                    state.aiDisconnected = true;
+                    state.aiDisconnectReason = `Code ${code}: ${reasonStr}`;
+                }
+            }
+
+            // Trigger post-call processing if we have audio
+            if (callSid && callAudioBuffers.has(callSid) && !callSummaries.has(callSid)) {
+                console.log(`[GEMINI] Triggering post-call processing after disconnect for ${callSid}`);
+                processCallAudio(callSid).catch(e => {
+                    console.error(`[GEMINI] Post-call processing failed:`, e.message);
+                });
+            }
+        });
     };
 
     // Fallback: create Gemini on-the-fly if no pre-established session
@@ -1094,8 +1186,35 @@ wss.on('connection', (twilioWs) => {
             }
         });
 
-        geminiWs.on('error', (e) => console.error('[GEMINI] Error:', e.message));
-        geminiWs.on('close', () => { ready = false; console.log('[GEMINI] Closed'); });
+        geminiWs.on('error', (e) => {
+            console.error('[GEMINI] Fallback error:', e.message);
+            ready = false;
+            if (callSid && callState.has(callSid)) {
+                callState.get(callSid).aiError = e.message;
+            }
+        });
+
+        geminiWs.on('close', (code, reason) => {
+            ready = false;
+            const reasonStr = reason?.toString() || 'unknown';
+            console.log(`[GEMINI] Fallback closed: code=${code} reason=${reasonStr}`);
+
+            if (code !== 1000 && code !== 1001) {
+                console.warn(`[GEMINI] Unexpected fallback disconnect for call ${callSid}`);
+                if (callSid && callState.has(callSid)) {
+                    const state = callState.get(callSid);
+                    state.aiDisconnected = true;
+                    state.aiDisconnectReason = `Code ${code}: ${reasonStr}`;
+                }
+            }
+
+            // Process call audio on disconnect
+            if (callSid && callAudioBuffers.has(callSid) && !callSummaries.has(callSid)) {
+                processCallAudio(callSid).catch(e => {
+                    console.error(`[GEMINI] Post-call processing failed:`, e.message);
+                });
+            }
+        });
     };
 
     twilioWs.on('message', (message) => {
@@ -1165,4 +1284,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v6.0 Ready - Auth + Post-Call Transcription & AI Summary');
+console.log('[CODEC] v6.1 Ready - Auth + Security Hardening + Post-Call Transcription');

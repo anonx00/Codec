@@ -77,9 +77,9 @@ variable "backend_memory" {
 }
 
 variable "backend_max_instances" {
-  description = "Maximum number of backend instances"
+  description = "Maximum number of backend instances (keep at 1 for stateful in-memory state)"
   type        = number
-  default     = 10
+  default     = 1  # Single instance to prevent state split - calls use in-memory state
 }
 
 variable "frontend_memory" {
