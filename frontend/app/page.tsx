@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -36,7 +36,7 @@ interface InboundConfig {
   instructions: string;
 }
 
-type View = 'chat' | 'calling' | 'settings';
+type View = 'login' | 'chat' | 'calling' | 'settings';
 
 // Simple markdown renderer for **bold** text
 function renderMarkdown(text: string) {
@@ -49,8 +49,34 @@ function renderMarkdown(text: string) {
   });
 }
 
+// Auth helper - makes authenticated API calls
+async function authFetch(url: string, options: RequestInit = {}) {
+  const token = localStorage.getItem('codec_token');
+  const headers = {
+    ...options.headers,
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+  };
+
+  const response = await fetch(url, { ...options, headers });
+
+  // If unauthorized, clear token
+  if (response.status === 401) {
+    localStorage.removeItem('codec_token');
+    localStorage.removeItem('codec_token_expires');
+    window.location.reload();
+  }
+
+  return response;
+}
+
 export default function Home() {
-  const [view, setView] = useState<View>('chat');
+  const [view, setView] = useState<View>('login');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [accessCode, setAccessCode] = useState('');
+  const [authError, setAuthError] = useState('');
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -69,8 +95,37 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize
+  // Check for existing auth on mount
   useEffect(() => {
+    const checkAuth = async () => {
+      const token = localStorage.getItem('codec_token');
+      const expires = localStorage.getItem('codec_token_expires');
+
+      if (token && expires && Date.now() < parseInt(expires)) {
+        try {
+          const res = await fetch(`${API_URL}/api/auth/verify`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const data = await res.json();
+          if (data.valid) {
+            setIsAuthenticated(true);
+            setView('chat');
+            initializeChat();
+          } else {
+            localStorage.removeItem('codec_token');
+            localStorage.removeItem('codec_token_expires');
+          }
+        } catch {
+          // Server might be down, keep login screen
+        }
+      }
+      setAuthLoading(false);
+    };
+
+    checkAuth();
+  }, []);
+
+  const initializeChat = useCallback(() => {
     fetchInboundConfig();
     setMessages([{
       id: 'welcome',
@@ -90,21 +145,18 @@ export default function Home() {
     if (view === 'calling' && callStatus?.sid) {
       const interval = setInterval(async () => {
         try {
-          const res = await fetch(`${API_URL}/api/call/${callStatus.sid}`);
+          const res = await authFetch(`${API_URL}/api/call/${callStatus.sid}`);
           const data = await res.json();
           setCallStatus(data);
 
           const isCallEnded = ['completed', 'failed', 'busy', 'no-answer', 'canceled'].includes(data.status);
 
           if (isCallEnded) {
-            // For completed calls, wait for summary to be ready
             if (data.status === 'completed') {
-              // If summary is still processing, keep polling
               if (data.summaryStatus === 'processing') {
-                return; // Keep polling for summary
+                return;
               }
 
-              // Summary is ready or there was an error
               clearInterval(interval);
               setTimeout(() => {
                 let content = `Call completed! Duration: ${data.duration || 0} seconds.`;
@@ -112,7 +164,7 @@ export default function Home() {
                 if (data.summary) {
                   content += `\n\n${data.summary}`;
                 } else if (data.summaryStatus === 'error') {
-                  content += '\n\n⚠️ Could not generate call summary.';
+                  content += '\n\n Could not generate call summary.';
                 }
 
                 content += '\n\nAnything else I can help with?';
@@ -127,7 +179,6 @@ export default function Home() {
                 setPendingCall(null);
               }, 500);
             } else {
-              // Call ended without completing (failed, busy, etc)
               clearInterval(interval);
               setTimeout(() => {
                 setMessages(prev => [...prev, {
@@ -149,9 +200,52 @@ export default function Home() {
     }
   }, [view, callStatus?.sid]);
 
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthLoading(true);
+
+    try {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessCode })
+      });
+
+      const data = await res.json();
+
+      if (data.success && data.token) {
+        localStorage.setItem('codec_token', data.token);
+        localStorage.setItem('codec_token_expires', data.expiresAt.toString());
+        setIsAuthenticated(true);
+        setView('chat');
+        initializeChat();
+      } else {
+        setAuthError(data.error || 'Invalid access code');
+      }
+    } catch {
+      setAuthError('Connection failed. Please try again.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await authFetch(`${API_URL}/api/auth/logout`, { method: 'POST' });
+    } catch {
+      // Ignore errors
+    }
+    localStorage.removeItem('codec_token');
+    localStorage.removeItem('codec_token_expires');
+    setIsAuthenticated(false);
+    setView('login');
+    setAccessCode('');
+  };
+
   const fetchInboundConfig = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/inbound/config`);
+      const res = await authFetch(`${API_URL}/api/inbound/config`);
       const data = await res.json();
       if (data.success && data.config) setInboundConfig(data.config);
     } catch (err) {
@@ -161,9 +255,8 @@ export default function Home() {
 
   const saveInboundConfig = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/inbound/config`, {
+      const res = await authFetch(`${API_URL}/api/inbound/config`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(inboundConfig)
       });
       const data = await res.json();
@@ -191,9 +284,8 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/chat`, {
+      const res = await authFetch(`${API_URL}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId, message: userMessage.content })
       });
 
@@ -202,12 +294,11 @@ export default function Home() {
 
       let cleanContent = data.message;
       if (data.callData) {
-        // Remove JSON from response - handle various formats
         cleanContent = cleanContent
-          .replace(/```json[\s\S]*?```/g, '')  // Remove ```json ... ``` blocks
-          .replace(/```[\s\S]*?```/g, '')       // Remove any ``` blocks
-          .replace(/\{"action"\s*:\s*"call"[\s\S]*?\}/g, '')  // Remove JSON object
-          .replace(/\n\s*\n/g, '\n')            // Remove extra blank lines
+          .replace(/```json[\s\S]*?```/g, '')
+          .replace(/```[\s\S]*?```/g, '')
+          .replace(/\{"action"\s*:\s*"call"[\s\S]*?\}/g, '')
+          .replace(/\n\s*\n/g, '\n')
           .trim();
         setPendingCall(data.callData);
       }
@@ -238,9 +329,8 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/call`, {
+      const res = await authFetch(`${API_URL}/api/call`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           phoneNumber: pendingCall.phone,
           task: pendingCall.task,
@@ -284,7 +374,7 @@ export default function Home() {
   const hangupCall = async () => {
     if (!callStatus?.sid) return;
     try {
-      await fetch(`${API_URL}/api/call/${callStatus.sid}/hangup`, { method: 'POST' });
+      await authFetch(`${API_URL}/api/call/${callStatus.sid}/hangup`, { method: 'POST' });
       setMessages(prev => [...prev, {
         id: `hangup-${Date.now()}`,
         role: 'system',
@@ -301,9 +391,8 @@ export default function Home() {
 
   const resetChat = async () => {
     if (conversationId) {
-      await fetch(`${API_URL}/api/chat/reset`, {
+      await authFetch(`${API_URL}/api/chat/reset`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId })
       });
     }
@@ -318,6 +407,68 @@ export default function Home() {
       timestamp: new Date()
     }]);
   };
+
+  // Loading state
+  if (authLoading && view === 'login') {
+    return (
+      <main className="h-screen flex items-center justify-center bg-gradient-to-b from-slate-900 to-slate-800">
+        <div className="text-white">Loading...</div>
+      </main>
+    );
+  }
+
+  // Login View
+  if (view === 'login' && !isAuthenticated) {
+    return (
+      <main className="h-screen flex items-center justify-center bg-gradient-to-b from-slate-900 to-slate-800 p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+              </svg>
+            </div>
+            <h1 className="text-3xl font-bold text-white mb-2">CODEC</h1>
+            <p className="text-slate-400">AI Phone Assistant</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="bg-slate-800 rounded-xl p-6 space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">
+                Access Code
+              </label>
+              <input
+                type="password"
+                value={accessCode}
+                onChange={(e) => setAccessCode(e.target.value)}
+                className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="Enter your access code"
+                autoFocus
+              />
+            </div>
+
+            {authError && (
+              <div className="p-3 bg-red-600/20 border border-red-500 rounded-lg text-red-400 text-sm">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!accessCode.trim() || authLoading}
+              className="w-full py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-slate-600 disabled:cursor-not-allowed transition-colors"
+            >
+              {authLoading ? 'Verifying...' : 'Sign In'}
+            </button>
+          </form>
+
+          <p className="text-center text-slate-500 text-sm mt-4">
+            Access code is generated during deployment
+          </p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="h-screen flex flex-col bg-gradient-to-b from-slate-900 to-slate-800">
@@ -352,6 +503,15 @@ export default function Home() {
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button
+            onClick={handleLogout}
+            className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg transition-colors"
+            title="Sign out"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
             </svg>
           </button>
         </div>

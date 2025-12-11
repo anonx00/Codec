@@ -14,7 +14,14 @@ echo ""
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Generate access code for authentication (or use existing)
+if [ -z "$CODEC_ACCESS_CODE" ]; then
+    CODEC_ACCESS_CODE=$(openssl rand -hex 8)
+fi
+echo -e "${CYAN}Access Code generated for this deployment${NC}"
 
 # Check prerequisites
 check_command() {
@@ -342,16 +349,16 @@ terraform apply -auto-approve
 BACKEND_URL=$(terraform output -raw backend_url 2>/dev/null || echo "")
 FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "")
 
-# Fix SERVER_DOMAIN for backend (extract domain from URL)
+# Fix SERVER_DOMAIN and set access code for backend
 if [ -n "$BACKEND_URL" ]; then
     BACKEND_DOMAIN=$(echo "$BACKEND_URL" | sed 's|https://||')
     echo ""
-    echo -e "${YELLOW}Updating backend SERVER_DOMAIN to: $BACKEND_DOMAIN${NC}"
+    echo -e "${YELLOW}Updating backend configuration...${NC}"
     gcloud run services update codec-backend \
         --region $REGION \
-        --update-env-vars "SERVER_DOMAIN=$BACKEND_DOMAIN" \
+        --update-env-vars "SERVER_DOMAIN=$BACKEND_DOMAIN,CODEC_ACCESS_CODE=$CODEC_ACCESS_CODE" \
         --quiet
-    echo -e "${GREEN}SERVER_DOMAIN updated${NC}"
+    echo -e "${GREEN}Backend configuration updated${NC}"
 fi
 
 # Rebuild frontend with actual backend URL
@@ -386,6 +393,14 @@ echo -e "Frontend URL: ${GREEN}$FRONTEND_URL${NC}"
 echo -e "Backend URL:  ${GREEN}$BACKEND_URL${NC}"
 echo ""
 echo "═══════════════════════════════════════════════════════════"
+echo -e "${CYAN}              LOGIN CREDENTIALS${NC}"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
+echo -e "Access Code: ${CYAN}$CODEC_ACCESS_CODE${NC}"
+echo ""
+echo -e "${YELLOW}SAVE THIS CODE! You'll need it to log in.${NC}"
+echo ""
+echo "═══════════════════════════════════════════════════════════"
 echo -e "${YELLOW}IMPORTANT: Configure Twilio Webhook${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
@@ -400,4 +415,4 @@ echo "5. Save"
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo -e "${GREEN}You can now open the Frontend URL and start making calls!${NC}"
+echo -e "${GREEN}Open the Frontend URL and use your Access Code to log in!${NC}"
