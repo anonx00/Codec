@@ -93,3 +93,17 @@ variable "frontend_max_instances" {
   type        = number
   default     = 5
 }
+
+# ElevenLabs (optional - for future use)
+variable "elevenlabs_api_key" {
+  description = "ElevenLabs API Key (optional)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "elevenlabs_voice_id" {
+  description = "ElevenLabs Voice ID (optional)"
+  type        = string
+  default     = ""
+}
