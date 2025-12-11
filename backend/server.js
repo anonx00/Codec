@@ -1,6 +1,7 @@
 const express = require('express');
 const { WebSocketServer, WebSocket } = require('ws');
 const twilio = require('twilio');
+const crypto = require('crypto');
 const dotenv = require('dotenv');
 
 dotenv.config();
@@ -11,13 +12,72 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
 
 const PORT = process.env.PORT || 8080;
+
+// ============================================================================
+// AUTHENTICATION
+// ============================================================================
+
+const CODEC_ACCESS_CODE = process.env.CODEC_ACCESS_CODE || 'codec-dev-mode';
+const activeSessions = new Map(); // token -> { createdAt, expiresAt }
+
+// Generate a session token
+function generateToken() {
+    return crypto.randomBytes(32).toString('hex');
+}
+
+// Validate session token
+function validateToken(token) {
+    if (!token) return false;
+    const session = activeSessions.get(token);
+    if (!session) return false;
+    if (Date.now() > session.expiresAt) {
+        activeSessions.delete(token);
+        return false;
+    }
+    return true;
+}
+
+// Auth middleware - protects API routes
+const requireAuth = (req, res, next) => {
+    // Skip auth for health checks and Twilio webhooks
+    if (req.path === '/health' || req.path === '/' || req.path.startsWith('/twilio/')) {
+        return next();
+    }
+
+    // Check for token in Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    if (!validateToken(token)) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'Invalid or expired token' });
+    }
+
+    next();
+};
+
+// Cleanup expired sessions
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of activeSessions.entries()) {
+        if (now > session.expiresAt) {
+            activeSessions.delete(token);
+        }
+    }
+}, 60 * 1000);
+
+// ============================================================================
+// TWILIO CLIENT
+// ============================================================================
 
 let twilioClient = null;
 const getTwilioClient = () => {
@@ -624,8 +684,64 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '5.9', mode: 'Vertex AI Native Audio + Post-Call Summary' }));
-app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '6.0', mode: 'Vertex AI Native Audio + Auth' }));
+app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size, sessions: activeSessions.size }));
+
+// Login endpoint - validates access code and returns session token
+app.post('/api/auth/login', (req, res) => {
+    const { accessCode } = req.body;
+
+    if (!accessCode) {
+        return res.status(400).json({ error: 'Access code required' });
+    }
+
+    if (accessCode !== CODEC_ACCESS_CODE) {
+        console.log('[AUTH] Failed login attempt');
+        return res.status(401).json({ error: 'Invalid access code' });
+    }
+
+    // Generate session token (valid for 24 hours)
+    const token = generateToken();
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+
+    activeSessions.set(token, {
+        createdAt: Date.now(),
+        expiresAt
+    });
+
+    console.log('[AUTH] Successful login, token issued');
+    res.json({ success: true, token, expiresAt });
+});
+
+// Logout endpoint
+app.post('/api/auth/logout', (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        activeSessions.delete(token);
+    }
+    res.json({ success: true });
+});
+
+// Verify token endpoint
+app.get('/api/auth/verify', (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ valid: false });
+    }
+
+    const token = authHeader.substring(7);
+    const valid = validateToken(token);
+    res.json({ valid });
+});
+
+// Apply auth middleware to all /api/* routes (except /api/auth/*)
+app.use('/api', (req, res, next) => {
+    if (req.path.startsWith('/auth/')) {
+        return next();
+    }
+    requireAuth(req, res, next);
+});
 
 app.post('/api/chat', async (req, res) => {
     const { conversationId, message } = req.body;
@@ -1049,4 +1165,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v5.9 Ready - Post-Call Transcription & AI Summary');
+console.log('[CODEC] v6.0 Ready - Auth + Post-Call Transcription & AI Summary');
