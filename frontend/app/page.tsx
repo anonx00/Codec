@@ -473,7 +473,7 @@ export default function Home() {
         setMessages(prev => [...prev, {
           id: `calling-${Date.now()}`,
           role: 'system',
-          content: `Calling ${pendingCall.business}...`,
+          content: `Calling ${pendingCall.business || pendingCall.phone}...`,
           timestamp: new Date()
         }]);
       } else {
@@ -698,16 +698,18 @@ export default function Home() {
             {/* Overlay info */}
             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
               <div className="text-center">
-                <div className="text-green-500 font-mono text-lg tracking-wider mb-1">
-                  {pendingCall?.business?.toUpperCase() || 'CALLING'}
+                <div className="text-green-500 font-mono text-xl tracking-wider mb-2">
+                  {pendingCall?.business?.toUpperCase() || pendingCall?.phone || 'CALLING'}
                 </div>
-                <div className="text-green-700 font-mono text-sm mb-4">
-                  {pendingCall?.phone}
-                </div>
-                <div className="text-green-500/60 font-mono text-xs tracking-widest">
+                {pendingCall?.business && (
+                  <div className="text-green-700 font-mono text-sm mb-4">
+                    {pendingCall?.phone}
+                  </div>
+                )}
+                <div className="text-green-500/80 font-mono text-sm tracking-widest animate-pulse">
                   {callStatus?.summaryStatus === 'processing'
                     ? 'PROCESSING...'
-                    : callStatus?.status?.toUpperCase().replace('-', ' ') || 'CONNECTING'}
+                    : callStatus?.status?.toUpperCase().replace('-', ' ') || 'CONNECTING...'}
                 </div>
               </div>
             </div>
@@ -777,14 +779,13 @@ export default function Home() {
           </div>
 
           {/* Call action */}
-          {pendingCall && (
+          {pendingCall && !isLoading && (
             <div className="px-4 pb-2">
               <button
                 onClick={makeCall}
-                disabled={isLoading}
-                className="w-full border border-green-500 text-green-500 py-3 font-mono text-sm tracking-wider hover:bg-green-500/10 transition-colors disabled:opacity-30"
+                className="w-full border border-green-500 text-green-500 py-3 font-mono text-sm tracking-wider hover:bg-green-500/10 transition-colors"
               >
-                CALL {pendingCall.business.toUpperCase()}
+                CALL {(pendingCall.business || pendingCall.phone || 'NOW').toUpperCase()}
               </button>
             </div>
           )}
