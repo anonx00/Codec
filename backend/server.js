@@ -413,6 +413,187 @@ async function processCallAudio(callSid) {
 }
 
 // ============================================================================
+// ADVANCED AUDIO PROCESSING (Noise Suppression, AGC, VAD Enhancement)
+// ============================================================================
+
+// Audio processing configuration for crowded/noisy environments
+const AUDIO_CONFIG = {
+    // Noise suppression settings
+    noiseFloor: 150,           // Minimum signal threshold
+    noiseReduction: 0.7,       // Noise reduction factor (0-1)
+    spectralSubtraction: 0.5,  // Spectral subtraction factor
+
+    // Automatic Gain Control (AGC)
+    agcEnabled: true,
+    agcTarget: 16384,          // Target RMS level (mid-range for 16-bit)
+    agcMinGain: 0.5,           // Minimum gain multiplier
+    agcMaxGain: 4.0,           // Maximum gain multiplier
+    agcAttack: 0.1,            // Attack rate (fast response)
+    agcRelease: 0.05,          // Release rate (slower decay)
+
+    // Voice Activity Detection enhancement
+    vadThreshold: 200,         // Voice activity threshold
+    vadHangover: 150,          // Frames to keep after voice stops (150ms)
+
+    // Band-pass filter for voice (300Hz - 3400Hz for telephony)
+    voiceLowCut: 300,
+    voiceHighCut: 3400,
+    sampleRate: 8000
+};
+
+// Running state for audio processing
+let agcGain = 1.0;
+let noiseEstimate = new Float32Array(256).fill(AUDIO_CONFIG.noiseFloor);
+let vadCounter = 0;
+
+// Apply noise gate to reduce background noise
+function applyNoiseGate(samples) {
+    const output = new Int16Array(samples.length);
+    const threshold = AUDIO_CONFIG.noiseFloor;
+
+    for (let i = 0; i < samples.length; i++) {
+        const abs = Math.abs(samples[i]);
+        if (abs < threshold) {
+            // Below threshold - heavily attenuate
+            output[i] = Math.round(samples[i] * 0.1);
+        } else {
+            // Above threshold - apply soft knee
+            const factor = Math.min(1, (abs - threshold * 0.5) / (threshold * 0.5));
+            output[i] = Math.round(samples[i] * factor);
+        }
+    }
+    return output;
+}
+
+// Automatic Gain Control - normalizes volume for clarity
+function applyAGC(samples) {
+    if (!AUDIO_CONFIG.agcEnabled) return samples;
+
+    const output = new Int16Array(samples.length);
+
+    // Calculate RMS of current frame
+    let sumSquares = 0;
+    for (let i = 0; i < samples.length; i++) {
+        sumSquares += samples[i] * samples[i];
+    }
+    const rms = Math.sqrt(sumSquares / samples.length);
+
+    if (rms > AUDIO_CONFIG.vadThreshold) {
+        // Voice detected - adjust gain
+        const targetGain = AUDIO_CONFIG.agcTarget / Math.max(rms, 1);
+        const clampedTarget = Math.max(AUDIO_CONFIG.agcMinGain,
+                                       Math.min(AUDIO_CONFIG.agcMaxGain, targetGain));
+
+        // Smooth gain changes
+        if (clampedTarget > agcGain) {
+            agcGain += (clampedTarget - agcGain) * AUDIO_CONFIG.agcAttack;
+        } else {
+            agcGain += (clampedTarget - agcGain) * AUDIO_CONFIG.agcRelease;
+        }
+        vadCounter = AUDIO_CONFIG.vadHangover;
+    } else if (vadCounter > 0) {
+        // Hangover period - maintain gain
+        vadCounter--;
+    } else {
+        // Silence - gradually reduce gain
+        agcGain *= 0.95;
+    }
+
+    // Apply gain with soft clipping
+    for (let i = 0; i < samples.length; i++) {
+        let sample = samples[i] * agcGain;
+        // Soft clipping to prevent harsh distortion
+        if (sample > 32000) {
+            sample = 32000 + (sample - 32000) * 0.1;
+        } else if (sample < -32000) {
+            sample = -32000 + (sample + 32000) * 0.1;
+        }
+        output[i] = Math.round(Math.max(-32767, Math.min(32767, sample)));
+    }
+
+    return output;
+}
+
+// Simple high-pass filter to remove low-frequency rumble
+function applyHighPass(samples, cutoff, sampleRate) {
+    const output = new Int16Array(samples.length);
+    const rc = 1.0 / (cutoff * 2 * Math.PI);
+    const dt = 1.0 / sampleRate;
+    const alpha = rc / (rc + dt);
+
+    let prevInput = 0;
+    let prevOutput = 0;
+
+    for (let i = 0; i < samples.length; i++) {
+        output[i] = Math.round(alpha * (prevOutput + samples[i] - prevInput));
+        prevInput = samples[i];
+        prevOutput = output[i];
+    }
+
+    return output;
+}
+
+// Low-pass filter to remove high-frequency noise
+function applyLowPass(samples, cutoff, sampleRate) {
+    const output = new Int16Array(samples.length);
+    const rc = 1.0 / (cutoff * 2 * Math.PI);
+    const dt = 1.0 / sampleRate;
+    const alpha = dt / (rc + dt);
+
+    let prev = 0;
+    for (let i = 0; i < samples.length; i++) {
+        output[i] = Math.round(prev + alpha * (samples[i] - prev));
+        prev = output[i];
+    }
+
+    return output;
+}
+
+// Full audio enhancement pipeline for incoming caller audio
+function enhanceCallerAudio(pcmBuffer) {
+    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
+
+    // Step 1: High-pass filter (remove low rumble < 300Hz)
+    let processed = applyHighPass(samples, AUDIO_CONFIG.voiceLowCut, AUDIO_CONFIG.sampleRate * 2);
+
+    // Step 2: Low-pass filter (remove high noise > 3400Hz)
+    processed = applyLowPass(processed, AUDIO_CONFIG.voiceHighCut, AUDIO_CONFIG.sampleRate * 2);
+
+    // Step 3: Noise gate
+    processed = applyNoiseGate(processed);
+
+    // Step 4: AGC for consistent volume
+    processed = applyAGC(processed);
+
+    return Buffer.from(processed.buffer);
+}
+
+// Enhanced AI audio output processing
+function enhanceAIAudio(pcmBuffer) {
+    const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.length / 2);
+
+    // Apply gentle compression to AI voice for clarity
+    const output = new Int16Array(samples.length);
+    const threshold = 20000;
+    const ratio = 0.5; // 2:1 compression above threshold
+
+    for (let i = 0; i < samples.length; i++) {
+        const abs = Math.abs(samples[i]);
+        if (abs > threshold) {
+            const excess = abs - threshold;
+            const compressed = threshold + excess * ratio;
+            output[i] = samples[i] > 0 ? Math.round(compressed) : Math.round(-compressed);
+        } else {
+            output[i] = samples[i];
+        }
+    }
+
+    return Buffer.from(output.buffer);
+}
+
+console.log('[AUDIO] Advanced audio processing initialized - noise suppression, AGC, VAD enhancement');
+
+// ============================================================================
 // AUDIO CONVERSION (Optimized)
 // ============================================================================
 
@@ -1028,8 +1209,10 @@ wss.on('connection', (twilioWs) => {
                         }
                         // Stream audio to Twilio and record for transcription
                         if (part.inlineData?.data) {
-                            const pcm = Buffer.from(part.inlineData.data, 'base64');
-                            const mulaw = pcm24kToMulaw8k(pcm);
+                            const pcmRaw = Buffer.from(part.inlineData.data, 'base64');
+                            // Enhance AI audio for better clarity
+                            const pcmEnhanced = enhanceAIAudio(pcmRaw);
+                            const mulaw = pcm24kToMulaw8k(pcmEnhanced);
 
                             // Record AI audio for post-call transcription
                             recordAudio('ai', mulaw);
@@ -1160,8 +1343,10 @@ wss.on('connection', (twilioWs) => {
                             addToTranscript('AI', part.text);
                         }
                         if (part.inlineData?.data) {
-                            const pcm = Buffer.from(part.inlineData.data, 'base64');
-                            const mulaw = pcm24kToMulaw8k(pcm);
+                            const pcmRaw = Buffer.from(part.inlineData.data, 'base64');
+                            // Enhance AI audio for better clarity
+                            const pcmEnhanced = enhanceAIAudio(pcmRaw);
+                            const mulaw = pcm24kToMulaw8k(pcmEnhanced);
 
                             // Record AI audio for post-call transcription
                             recordAudio('ai', mulaw);
@@ -1255,11 +1440,14 @@ wss.on('connection', (twilioWs) => {
                 const mulawBuffer = Buffer.from(msg.media.payload, 'base64');
                 recordAudio('caller', mulawBuffer);
 
-                // Stream caller audio to Gemini
-                const pcm = mulawToPcm16k(mulawBuffer);
+                // Convert to PCM and apply audio enhancement for noisy environments
+                const pcmRaw = mulawToPcm16k(mulawBuffer);
+                const pcmEnhanced = enhanceCallerAudio(pcmRaw);
+
+                // Stream enhanced caller audio to Gemini
                 geminiWs.send(JSON.stringify({
                     realtimeInput: {
-                        mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: pcm.toString('base64') }]
+                        mediaChunks: [{ mimeType: "audio/pcm;rate=16000", data: pcmEnhanced.toString('base64') }]
                     }
                 }));
             }
@@ -1284,4 +1472,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v6.1 Ready - Auth + Security Hardening + Post-Call Transcription');
+console.log('[CODEC] v7.0 Ready - Enhanced Audio Processing + Noise Suppression + AGC + MGS Frontend');
