@@ -1,8 +1,15 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { Text, RoundedBox } from '@react-three/drei';
+import * as THREE from 'three';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface Message {
   id: string;
@@ -38,18 +45,232 @@ interface InboundConfig {
 
 type View = 'login' | 'chat' | 'calling' | 'settings';
 
-// Simple markdown renderer for **bold** text
+// ============================================================================
+// THREE.JS COMPONENTS
+// ============================================================================
+
+// Animated codec portrait mesh
+function CodecPortrait({ speaking, isAI }: { speaking: boolean; isAI: boolean }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const glowRef = useRef<THREE.Mesh>(null);
+  const [pulse, setPulse] = useState(0);
+
+  useFrame((state) => {
+    if (meshRef.current) {
+      // Subtle floating animation
+      meshRef.current.position.y = Math.sin(state.clock.elapsedTime * 2) * 0.02;
+
+      // Speaking animation
+      if (speaking) {
+        meshRef.current.scale.x = 1 + Math.sin(state.clock.elapsedTime * 15) * 0.02;
+        meshRef.current.scale.y = 1 + Math.cos(state.clock.elapsedTime * 12) * 0.03;
+      }
+    }
+
+    if (glowRef.current && speaking) {
+      const material = glowRef.current.material as THREE.MeshBasicMaterial;
+      material.opacity = 0.3 + Math.sin(state.clock.elapsedTime * 8) * 0.2;
+    }
+
+    setPulse(state.clock.elapsedTime);
+  });
+
+  const color = isAI ? '#00ff88' : '#00aaff';
+  const glowColor = isAI ? '#00ff88' : '#00aaff';
+
+  return (
+    <group>
+      {/* Glow effect */}
+      <mesh ref={glowRef} position={[0, 0, -0.1]}>
+        <circleGeometry args={[0.55, 32]} />
+        <meshBasicMaterial color={glowColor} transparent opacity={speaking ? 0.4 : 0.1} />
+      </mesh>
+
+      {/* Portrait frame */}
+      <mesh ref={meshRef}>
+        <ringGeometry args={[0.4, 0.5, 6]} />
+        <meshBasicMaterial color={color} wireframe />
+      </mesh>
+
+      {/* Inner hexagon */}
+      <mesh rotation={[0, 0, Math.PI / 6]}>
+        <ringGeometry args={[0.25, 0.35, 6]} />
+        <meshBasicMaterial color={color} transparent opacity={0.5} />
+      </mesh>
+
+      {/* Center indicator */}
+      <mesh>
+        <circleGeometry args={[0.15, 6]} />
+        <meshBasicMaterial color={speaking ? '#ffffff' : color} transparent opacity={speaking ? 0.8 : 0.3} />
+      </mesh>
+
+      {/* Scanline effect */}
+      {Array.from({ length: 8 }).map((_, i) => (
+        <mesh key={i} position={[0, -0.4 + i * 0.1 + (pulse % 0.1), 0.01]}>
+          <planeGeometry args={[1, 0.01]} />
+          <meshBasicMaterial color={color} transparent opacity={0.1} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// Audio waveform visualization
+function AudioWaveform({ active }: { active: boolean }) {
+  const barsRef = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    if (barsRef.current && active) {
+      barsRef.current.children.forEach((child, i) => {
+        const mesh = child as THREE.Mesh;
+        const scale = 0.5 + Math.sin(state.clock.elapsedTime * 10 + i * 0.5) * 0.5;
+        mesh.scale.y = scale;
+      });
+    }
+  });
+
+  return (
+    <group ref={barsRef} position={[0, -0.7, 0]}>
+      {Array.from({ length: 16 }).map((_, i) => (
+        <mesh key={i} position={[-0.45 + i * 0.06, 0, 0]}>
+          <boxGeometry args={[0.04, 0.15, 0.01]} />
+          <meshBasicMaterial color="#00ff88" transparent opacity={active ? 0.8 : 0.2} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// MGS-style codec frame
+function CodecFrame() {
+  return (
+    <group>
+      {/* Outer frame corners */}
+      <mesh position={[-1.8, 1, 0]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+      <mesh position={[-1.8, 1, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+
+      <mesh position={[1.8, 1, 0]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+      <mesh position={[1.8, 1, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+
+      <mesh position={[-1.8, -1, 0]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+      <mesh position={[-1.8, -1, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+
+      <mesh position={[1.8, -1, 0]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+      <mesh position={[1.8, -1, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <planeGeometry args={[0.3, 0.02]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+
+      {/* Tech lines */}
+      <mesh position={[0, 1.1, 0]}>
+        <planeGeometry args={[2.5, 0.005]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.5} />
+      </mesh>
+      <mesh position={[0, -1.1, 0]}>
+        <planeGeometry args={[2.5, 0.005]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.5} />
+      </mesh>
+    </group>
+  );
+}
+
+// Frequency indicator
+function FrequencyDisplay({ frequency }: { frequency: string }) {
+  return (
+    <group position={[0, 1.3, 0]}>
+      <Text
+        fontSize={0.12}
+        color="#00ff88"
+        anchorX="center"
+        anchorY="middle"
+        font="/fonts/share-tech-mono.woff"
+      >
+        {`FREQUENCY: ${frequency}`}
+      </Text>
+    </group>
+  );
+}
+
+// Main 3D codec scene
+function CodecScene({ isCalling, isSpeaking }: { isCalling: boolean; isSpeaking: boolean }) {
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <pointLight position={[10, 10, 10]} />
+
+      <CodecFrame />
+
+      {/* AI Portrait - Left side */}
+      <group position={[-1, 0.2, 0]}>
+        <CodecPortrait speaking={isSpeaking} isAI={true} />
+        <Text
+          position={[0, -0.65, 0]}
+          fontSize={0.08}
+          color="#00ff88"
+          anchorX="center"
+        >
+          CODEC AI
+        </Text>
+      </group>
+
+      {/* User Portrait - Right side */}
+      <group position={[1, 0.2, 0]}>
+        <CodecPortrait speaking={!isSpeaking && isCalling} isAI={false} />
+        <Text
+          position={[0, -0.65, 0]}
+          fontSize={0.08}
+          color="#00aaff"
+          anchorX="center"
+        >
+          OPERATOR
+        </Text>
+      </group>
+
+      {/* Center waveform */}
+      <group position={[0, -0.3, 0]}>
+        <AudioWaveform active={isCalling} />
+      </group>
+
+      <FrequencyDisplay frequency={isCalling ? "140.85" : "141.12"} />
+    </>
+  );
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
 function renderMarkdown(text: string) {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+      return <strong key={i} className="font-bold text-codec-green">{part.slice(2, -2)}</strong>;
     }
     return part;
   });
 }
 
-// Auth helper - makes authenticated API calls
 async function authFetch(url: string, options: RequestInit = {}) {
   const token = localStorage.getItem('codec_token');
   const headers = {
@@ -60,7 +281,6 @@ async function authFetch(url: string, options: RequestInit = {}) {
 
   const response = await fetch(url, { ...options, headers });
 
-  // If unauthorized, clear token
   if (response.status === 401) {
     localStorage.removeItem('codec_token');
     localStorage.removeItem('codec_token_expires');
@@ -69,6 +289,10 @@ async function authFetch(url: string, options: RequestInit = {}) {
 
   return response;
 }
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
 
 export default function Home() {
   const [view, setView] = useState<View>('login');
@@ -91,9 +315,19 @@ export default function Home() {
     instructions: 'Be helpful, professional, and concise.'
   });
   const [configSaved, setConfigSaved] = useState(false);
+  const [glitchEffect, setGlitchEffect] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Trigger glitch effect periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setGlitchEffect(true);
+      setTimeout(() => setGlitchEffect(false), 150);
+    }, 8000 + Math.random() * 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Check for existing auth on mount
   useEffect(() => {
@@ -116,7 +350,7 @@ export default function Home() {
             localStorage.removeItem('codec_token_expires');
           }
         } catch {
-          // Server might be down, keep login screen
+          // Server might be down
         }
       }
       setAuthLoading(false);
@@ -130,12 +364,11 @@ export default function Home() {
     setMessages([{
       id: 'welcome',
       role: 'assistant',
-      content: "Hey! I'm CODEC, your AI phone assistant. I can make calls to anyone on your behalf - restaurants, businesses, friends, family. Who would you like me to call?",
+      content: "CODEC ONLINE. I'm your AI communications specialist. I can establish voice links to any target - restaurants, businesses, contacts. State your objective, Operator.",
       timestamp: new Date()
     }]);
   }, []);
 
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -159,15 +392,15 @@ export default function Home() {
 
               clearInterval(interval);
               setTimeout(() => {
-                let content = `Call completed! Duration: ${data.duration || 0} seconds.`;
+                let content = `TRANSMISSION COMPLETE. Duration: ${data.duration || 0} seconds.`;
 
                 if (data.summary) {
                   content += `\n\n${data.summary}`;
                 } else if (data.summaryStatus === 'error') {
-                  content += '\n\n Could not generate call summary.';
+                  content += '\n\nWARNING: Unable to decode transmission log.';
                 }
 
-                content += '\n\nAnything else I can help with?';
+                content += '\n\nAwaiting further orders, Operator.';
 
                 setMessages(prev => [...prev, {
                   id: `call-done-${Date.now()}`,
@@ -184,7 +417,7 @@ export default function Home() {
                 setMessages(prev => [...prev, {
                   id: `call-done-${Date.now()}`,
                   role: 'system',
-                  content: `Call ended: ${data.status}. Want me to try again?`,
+                  content: `TRANSMISSION FAILED: ${data.status.toUpperCase()}. Retry mission?`,
                   timestamp: new Date()
                 }]);
                 setView('chat');
@@ -199,6 +432,16 @@ export default function Home() {
       return () => clearInterval(interval);
     }
   }, [view, callStatus?.sid]);
+
+  const fetchInboundConfig = async () => {
+    try {
+      const res = await authFetch(`${API_URL}/api/inbound/config`);
+      const data = await res.json();
+      if (data.success && data.config) setInboundConfig(data.config);
+    } catch (err) {
+      console.error('Error fetching config:', err);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -221,10 +464,10 @@ export default function Home() {
         setView('chat');
         initializeChat();
       } else {
-        setAuthError(data.error || 'Invalid access code');
+        setAuthError(data.error || 'ACCESS DENIED');
       }
     } catch {
-      setAuthError('Connection failed. Please try again.');
+      setAuthError('COMM LINK FAILURE. RETRY.');
     } finally {
       setAuthLoading(false);
     }
@@ -234,23 +477,13 @@ export default function Home() {
     try {
       await authFetch(`${API_URL}/api/auth/logout`, { method: 'POST' });
     } catch {
-      // Ignore errors
+      // Ignore
     }
     localStorage.removeItem('codec_token');
     localStorage.removeItem('codec_token_expires');
     setIsAuthenticated(false);
     setView('login');
     setAccessCode('');
-  };
-
-  const fetchInboundConfig = async () => {
-    try {
-      const res = await authFetch(`${API_URL}/api/inbound/config`);
-      const data = await res.json();
-      if (data.success && data.config) setInboundConfig(data.config);
-    } catch (err) {
-      console.error('Error fetching config:', err);
-    }
   };
 
   const saveInboundConfig = async () => {
@@ -306,7 +539,7 @@ export default function Home() {
       setMessages(prev => [...prev, {
         id: `ai-${Date.now()}`,
         role: 'assistant',
-        content: cleanContent || "Ready to make that call!",
+        content: cleanContent || "Target acquired. Ready to establish connection.",
         timestamp: new Date(),
         callData: data.callData
       }]);
@@ -315,7 +548,7 @@ export default function Home() {
       setMessages(prev => [...prev, {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: "Sorry, connection issue. Try again.",
+        content: "COMM ERROR. Signal interference detected. Retry transmission.",
         timestamp: new Date()
       }]);
     } finally {
@@ -347,14 +580,14 @@ export default function Home() {
         setMessages(prev => [...prev, {
           id: `calling-${Date.now()}`,
           role: 'system',
-          content: `Calling ${pendingCall.business} at ${pendingCall.phone}...`,
+          content: `ESTABLISHING LINK TO ${pendingCall.business.toUpperCase()} [${pendingCall.phone}]...`,
           timestamp: new Date()
         }]);
       } else {
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
           role: 'assistant',
-          content: `Couldn't make the call: ${data.error}`,
+          content: `MISSION ABORT: ${data.error}`,
           timestamp: new Date()
         }]);
       }
@@ -363,7 +596,7 @@ export default function Home() {
       setMessages(prev => [...prev, {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: "Connection failed. Try again.",
+        content: "LINK FAILURE. Check comm systems.",
         timestamp: new Date()
       }]);
     } finally {
@@ -378,7 +611,7 @@ export default function Home() {
       setMessages(prev => [...prev, {
         id: `hangup-${Date.now()}`,
         role: 'system',
-        content: 'Call ended. Anything else?',
+        content: 'TRANSMISSION TERMINATED. Awaiting orders.',
         timestamp: new Date()
       }]);
       setView('chat');
@@ -403,7 +636,7 @@ export default function Home() {
     setMessages([{
       id: 'welcome-new',
       role: 'assistant',
-      content: "Fresh start! What can I help you with?",
+      content: "CODEC RESET. Systems nominal. Ready for new directives.",
       timestamp: new Date()
     }]);
   };
@@ -411,8 +644,12 @@ export default function Home() {
   // Loading state
   if (authLoading && view === 'login') {
     return (
-      <main className="h-screen flex items-center justify-center bg-gradient-to-b from-slate-900 to-slate-800">
-        <div className="text-white">Loading...</div>
+      <main className="codec-screen h-screen flex items-center justify-center">
+        <div className="text-codec-green font-mono animate-pulse">
+          INITIALIZING CODEC SYSTEMS...
+        </div>
+        <div className="scanlines" />
+        <div className="crt-overlay" />
       </main>
     );
   }
@@ -420,35 +657,36 @@ export default function Home() {
   // Login View
   if (view === 'login' && !isAuthenticated) {
     return (
-      <main className="h-screen flex items-center justify-center bg-gradient-to-b from-slate-900 to-slate-800 p-4">
-        <div className="w-full max-w-md">
+      <main className={`codec-screen h-screen flex items-center justify-center p-4 ${glitchEffect ? 'glitch' : ''}`}>
+        <div className="w-full max-w-md codec-panel p-8">
           <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+            <div className="codec-hex-icon mx-auto mb-4">
+              <svg className="w-16 h-16 text-codec-green" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" strokeWidth="1" />
+                <path d="M12 6L12 18M6 9L18 9M6 15L18 15" strokeWidth="1" />
               </svg>
             </div>
-            <h1 className="text-3xl font-bold text-white mb-2">CODEC</h1>
-            <p className="text-slate-400">AI Phone Assistant</p>
+            <h1 className="text-3xl font-bold text-codec-green mb-2 font-mono tracking-wider">CODEC</h1>
+            <p className="text-codec-green-dim font-mono text-sm">TACTICAL COMMUNICATIONS SYSTEM</p>
           </div>
 
-          <form onSubmit={handleLogin} className="bg-slate-800 rounded-xl p-6 space-y-4">
+          <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">
-                Access Code
+              <label className="block text-sm font-mono text-codec-green mb-2 tracking-wider">
+                ACCESS CODE
               </label>
               <input
                 type="password"
                 value={accessCode}
                 onChange={(e) => setAccessCode(e.target.value)}
-                className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="Enter your access code"
+                className="codec-input w-full p-3 font-mono"
+                placeholder="ENTER AUTHORIZATION"
                 autoFocus
               />
             </div>
 
             {authError && (
-              <div className="p-3 bg-red-600/20 border border-red-500 rounded-lg text-red-400 text-sm">
+              <div className="codec-error p-3 font-mono text-sm">
                 {authError}
               </div>
             )}
@@ -456,40 +694,45 @@ export default function Home() {
             <button
               type="submit"
               disabled={!accessCode.trim() || authLoading}
-              className="w-full py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:bg-slate-600 disabled:cursor-not-allowed transition-colors"
+              className="codec-button w-full py-3 font-mono tracking-wider"
             >
-              {authLoading ? 'Verifying...' : 'Sign In'}
+              {authLoading ? 'AUTHENTICATING...' : 'ESTABLISH LINK'}
             </button>
           </form>
 
-          <p className="text-center text-slate-500 text-sm mt-4">
-            Access code is generated during deployment
+          <p className="text-center text-codec-green-dim text-xs mt-6 font-mono">
+            SECURE CHANNEL ESTABLISHED
           </p>
         </div>
+        <div className="scanlines" />
+        <div className="crt-overlay" />
       </main>
     );
   }
 
   return (
-    <main className="h-screen flex flex-col bg-gradient-to-b from-slate-900 to-slate-800">
+    <main className={`codec-screen h-screen flex flex-col ${glitchEffect ? 'glitch' : ''}`}>
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <header className="codec-header flex items-center justify-between px-6 py-3">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center">
-            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+          <div className="codec-hex-icon-sm">
+            <svg className="w-8 h-8 text-codec-green" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <polygon points="12,2 22,8.5 22,15.5 12,22 2,15.5 2,8.5" strokeWidth="1.5" />
             </svg>
           </div>
           <div>
-            <h1 className="text-xl font-bold text-white">CODEC</h1>
-            <p className="text-xs text-slate-400">AI Phone Assistant</p>
+            <h1 className="text-xl font-bold text-codec-green font-mono tracking-wider">CODEC</h1>
+            <p className="text-xs text-codec-green-dim font-mono">v7.0 // TACTICAL AI</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <span className="text-codec-green-dim font-mono text-xs mr-4">
+            FREQ: 141.12
+          </span>
           <button
             onClick={() => setView(view === 'settings' ? 'chat' : 'settings')}
-            className={`p-2 rounded-lg transition-colors ${view === 'settings' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+            className={`codec-icon-button ${view === 'settings' ? 'active' : ''}`}
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -498,8 +741,8 @@ export default function Home() {
           </button>
           <button
             onClick={resetChat}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
-            title="New conversation"
+            className="codec-icon-button"
+            title="Reset transmission"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -507,8 +750,8 @@ export default function Home() {
           </button>
           <button
             onClick={handleLogout}
-            className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg transition-colors"
-            title="Sign out"
+            className="codec-icon-button hover:text-red-500"
+            title="Disconnect"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -521,122 +764,127 @@ export default function Home() {
       {view === 'settings' && (
         <div className="flex-1 overflow-auto p-6">
           <div className="max-w-2xl mx-auto space-y-6">
-            <h2 className="text-2xl font-bold text-white">Inbound Call Settings</h2>
-            <p className="text-slate-400">Configure how I answer calls to your Twilio number</p>
+            <h2 className="text-2xl font-bold text-codec-green font-mono tracking-wider">INBOUND CONFIG</h2>
+            <p className="text-codec-green-dim font-mono text-sm">Configure response protocols for incoming transmissions</p>
 
-            <div className="bg-slate-800 rounded-xl p-6 space-y-4">
+            <div className="codec-panel p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-medium text-white">Accept Inbound Calls</div>
-                  <div className="text-sm text-slate-400">When off, callers hear a rejection message</div>
+                  <div className="font-mono text-codec-green">ACCEPT INBOUND</div>
+                  <div className="text-sm text-codec-green-dim font-mono">Toggle incoming transmission handling</div>
                 </div>
                 <button
                   onClick={() => setInboundConfig({ ...inboundConfig, enabled: !inboundConfig.enabled })}
-                  className={`w-12 h-6 rounded-full transition-colors ${inboundConfig.enabled ? 'bg-green-500' : 'bg-slate-600'}`}
+                  className={`codec-toggle ${inboundConfig.enabled ? 'active' : ''}`}
                 >
-                  <div className={`w-5 h-5 bg-white rounded-full shadow transform transition-transform ${inboundConfig.enabled ? 'translate-x-6' : 'translate-x-0.5'}`} />
+                  <div className="codec-toggle-knob" />
                 </button>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Business Name</label>
+                <label className="block text-sm font-mono text-codec-green mb-1">CALLSIGN</label>
                 <input
                   type="text"
                   value={inboundConfig.businessName}
                   onChange={(e) => setInboundConfig({ ...inboundConfig, businessName: e.target.value })}
-                  className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg text-white"
+                  className="codec-input w-full p-3 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Greeting Message</label>
+                <label className="block text-sm font-mono text-codec-green mb-1">GREETING PROTOCOL</label>
                 <textarea
                   value={inboundConfig.greeting}
                   onChange={(e) => setInboundConfig({ ...inboundConfig, greeting: e.target.value })}
-                  className="w-full h-20 p-3 bg-slate-700 border border-slate-600 rounded-lg text-white resize-none"
+                  className="codec-input w-full h-20 p-3 font-mono resize-none"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Purpose</label>
+                <label className="block text-sm font-mono text-codec-green mb-1">MISSION TYPE</label>
                 <input
                   type="text"
                   value={inboundConfig.purpose}
                   onChange={(e) => setInboundConfig({ ...inboundConfig, purpose: e.target.value })}
-                  className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg text-white"
-                  placeholder="e.g., customer support, appointment booking"
+                  className="codec-input w-full p-3 font-mono"
+                  placeholder="e.g., tactical support, intel gathering"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">AI Instructions</label>
+                <label className="block text-sm font-mono text-codec-green mb-1">DIRECTIVE</label>
                 <textarea
                   value={inboundConfig.instructions}
                   onChange={(e) => setInboundConfig({ ...inboundConfig, instructions: e.target.value })}
-                  className="w-full h-24 p-3 bg-slate-700 border border-slate-600 rounded-lg text-white resize-none"
-                  placeholder="How should the AI handle calls?"
+                  className="codec-input w-full h-24 p-3 font-mono resize-none"
+                  placeholder="Operational parameters..."
                 />
               </div>
 
               {configSaved && (
-                <div className="p-3 bg-green-600/20 border border-green-500 rounded-lg text-green-400">
-                  Settings saved!
+                <div className="codec-success p-3 font-mono text-sm">
+                  CONFIG SAVED SUCCESSFULLY
                 </div>
               )}
 
               <button
                 onClick={saveInboundConfig}
-                className="w-full py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors"
+                className="codec-button w-full py-3 font-mono tracking-wider"
               >
-                Save Settings
+                SAVE CONFIGURATION
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Calling View */}
+      {/* Calling View with Three.js */}
       {view === 'calling' && (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="relative inline-block mb-6">
-              <div className="w-32 h-32 bg-green-600/20 rounded-full flex items-center justify-center">
-                <div className="w-28 h-28 bg-green-600/30 rounded-full animate-ping absolute" />
-                <svg className="w-16 h-16 text-green-500 relative z-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                </svg>
+        <div className="flex-1 flex flex-col">
+          {/* 3D Codec Scene */}
+          <div className="h-64 relative">
+            <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
+              <Suspense fallback={null}>
+                <CodecScene
+                  isCalling={true}
+                  isSpeaking={callStatus?.status === 'in-progress'}
+                />
+              </Suspense>
+            </Canvas>
+          </div>
+
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-codec-green mb-2 font-mono tracking-wider">
+                {pendingCall?.business?.toUpperCase() || 'ESTABLISHING LINK'}
+              </h2>
+              <p className="text-codec-green-dim font-mono mb-4">{pendingCall?.phone}</p>
+
+              <div className="codec-status-bar mb-6">
+                <span className={`codec-status-dot ${callStatus?.summaryStatus === 'processing' ? 'processing' : ''}`} />
+                <span className="text-codec-green font-mono uppercase text-sm">
+                  {callStatus?.summaryStatus === 'processing'
+                    ? 'DECODING TRANSMISSION...'
+                    : callStatus?.status || 'CONNECTING'}
+                </span>
               </div>
-            </div>
 
-            <h2 className="text-2xl font-bold text-white mb-2">
-              {pendingCall?.business || 'Making Call'}
-            </h2>
-            <p className="text-slate-400 mb-4">{pendingCall?.phone}</p>
-
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-full mb-6">
-              <span className={`w-2 h-2 rounded-full animate-pulse ${callStatus?.summaryStatus === 'processing' ? 'bg-yellow-500' : 'bg-green-500'}`} />
-              <span className="text-slate-300 capitalize">
+              <p className="text-sm text-codec-green-dim mb-6 font-mono">
                 {callStatus?.summaryStatus === 'processing'
-                  ? 'Processing transcript...'
-                  : callStatus?.status || 'connecting'}
-              </span>
+                  ? 'ANALYZING COMM DATA...'
+                  : "AI OPERATIVE ENGAGED"}
+              </p>
+
+              <button
+                onClick={hangupCall}
+                className="codec-button-danger px-8 py-3 font-mono tracking-wider inline-flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+                </svg>
+                ABORT MISSION
+              </button>
             </div>
-
-            <p className="text-sm text-slate-500 mb-6">
-              {callStatus?.summaryStatus === 'processing'
-                ? 'Analyzing the call conversation...'
-                : "I'm handling the conversation..."}
-            </p>
-
-            <button
-              onClick={hangupCall}
-              className="px-8 py-3 bg-red-600 text-white font-medium rounded-full hover:bg-red-700 transition-colors flex items-center gap-2 mx-auto"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
-              </svg>
-              End Call
-            </button>
           </div>
         </div>
       )}
@@ -644,37 +892,37 @@ export default function Home() {
       {/* Chat View */}
       {view === 'chat' && (
         <>
-          <div className="flex-1 overflow-auto p-4 space-y-4">
+          <div className="flex-1 overflow-auto p-4 space-y-4 codec-messages">
             {messages.map((msg) => (
               <div
                 key={msg.id}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} codec-message-animate`}
               >
                 <div
-                  className={`max-w-[80%] px-4 py-3 rounded-2xl ${
+                  className={`max-w-[80%] px-4 py-3 ${
                     msg.role === 'user'
-                      ? 'bg-indigo-600 text-white'
+                      ? 'codec-message-user'
                       : msg.role === 'system'
-                      ? 'bg-slate-700 text-slate-300 border border-slate-600'
-                      : 'bg-slate-800 text-white'
+                      ? 'codec-message-system'
+                      : 'codec-message-ai'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap">{renderMarkdown(msg.content)}</p>
+                  <p className="whitespace-pre-wrap font-mono text-sm">{renderMarkdown(msg.content)}</p>
 
                   {msg.callData && (
-                    <div className="mt-3 p-3 bg-slate-900/50 rounded-lg border border-slate-600">
-                      <div className="text-sm space-y-1">
+                    <div className="mt-3 codec-target-info">
+                      <div className="text-xs space-y-1 font-mono">
                         <div className="flex justify-between">
-                          <span className="text-slate-400">To:</span>
-                          <span className="text-white">{msg.callData.business}</span>
+                          <span className="text-codec-green-dim">TARGET:</span>
+                          <span className="text-codec-green">{msg.callData.business}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-slate-400">Phone:</span>
-                          <span className="text-white">{msg.callData.phone}</span>
+                          <span className="text-codec-green-dim">FREQ:</span>
+                          <span className="text-codec-green">{msg.callData.phone}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-slate-400">Purpose:</span>
-                          <span className="text-white capitalize">{msg.callData.task}</span>
+                          <span className="text-codec-green-dim">MISSION:</span>
+                          <span className="text-codec-green uppercase">{msg.callData.task}</span>
                         </div>
                       </div>
                     </div>
@@ -685,11 +933,10 @@ export default function Home() {
 
             {isLoading && (
               <div className="flex justify-start">
-                <div className="bg-slate-800 px-4 py-3 rounded-2xl">
-                  <div className="flex gap-1">
-                    <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <div className="codec-message-ai px-4 py-3">
+                  <div className="flex gap-1 font-mono text-codec-green">
+                    <span className="animate-pulse">PROCESSING</span>
+                    <span className="codec-cursor">_</span>
                   </div>
                 </div>
               </div>
@@ -701,29 +948,32 @@ export default function Home() {
           {/* Call Action */}
           {pendingCall && (
             <div className="px-4 pb-2">
-              <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <div className="codec-panel p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div>
-                    <div className="font-medium text-white">{pendingCall.business}</div>
-                    <div className="text-sm text-slate-400">{pendingCall.phone}</div>
+                    <div className="font-mono text-codec-green">{pendingCall.business.toUpperCase()}</div>
+                    <div className="text-sm text-codec-green-dim font-mono">{pendingCall.phone}</div>
+                  </div>
+                  <div className="codec-status-indicator">
+                    TARGET ACQUIRED
                   </div>
                 </div>
                 <button
                   onClick={makeCall}
                   disabled={isLoading}
-                  className="w-full py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 disabled:bg-slate-600 transition-colors flex items-center justify-center gap-2"
+                  className="codec-button w-full py-3 font-mono tracking-wider flex items-center justify-center gap-2"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                   </svg>
-                  Make the Call
+                  INITIATE TRANSMISSION
                 </button>
               </div>
             </div>
           )}
 
           {/* Input */}
-          <div className="p-4 border-t border-slate-700">
+          <div className="p-4 codec-input-area">
             <div className="flex gap-2">
               <input
                 ref={inputRef}
@@ -731,14 +981,14 @@ export default function Home() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), sendMessage())}
-                placeholder="Type your message..."
-                className="flex-1 px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                placeholder="ENTER DIRECTIVE..."
+                className="codec-input flex-1 px-4 py-3 font-mono"
                 disabled={isLoading}
               />
               <button
                 onClick={sendMessage}
                 disabled={!input.trim() || isLoading}
-                className="px-4 py-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:bg-slate-700 disabled:text-slate-500 transition-colors"
+                className="codec-button px-4 py-3"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -748,6 +998,10 @@ export default function Home() {
           </div>
         </>
       )}
+
+      {/* CRT Effects Overlay */}
+      <div className="scanlines" />
+      <div className="crt-overlay" />
     </main>
   );
 }

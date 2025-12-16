@@ -2,58 +2,469 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   MGS CODEC - RETRO CRT THEME
+   ============================================================================ */
+
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 249, 250, 251;
-  --background-end-rgb: 243, 244, 246;
+  /* Codec Green Colors */
+  --codec-green: #00ff88;
+  --codec-green-dim: #00aa5e;
+  --codec-green-dark: #004422;
+  --codec-green-glow: rgba(0, 255, 136, 0.3);
+
+  /* Codec Blue Colors */
+  --codec-blue: #00aaff;
+  --codec-blue-dim: #0077aa;
+
+  /* Background Colors */
+  --codec-bg: #0a0f0a;
+  --codec-bg-panel: rgba(0, 40, 20, 0.9);
+  --codec-bg-input: rgba(0, 30, 15, 0.8);
+
+  /* CRT Effects */
+  --scanline-opacity: 0.08;
+  --crt-curve: 2px;
+  --glow-intensity: 0.5;
+}
+
+/* ============================================================================
+   BASE STYLES
+   ============================================================================ */
+
+* {
+  box-sizing: border-box;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
+  background: var(--codec-bg);
+  color: var(--codec-green);
+  min-height: 100vh;
+  overflow: hidden;
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
+}
+
+/* ============================================================================
+   CODEC SCREEN - MAIN CONTAINER
+   ============================================================================ */
+
+.codec-screen {
+  background: radial-gradient(ellipse at center, #0a1a0a 0%, #050a05 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+/* CRT Curvature Effect */
+.codec-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.4) 100%);
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* ============================================================================
+   SCANLINES OVERLAY
+   ============================================================================ */
+
+.scanlines {
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.15),
+    rgba(0, 0, 0, 0.15) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+  pointer-events: none;
+  z-index: 1000;
+  animation: scanline-flicker 0.1s infinite;
+}
+
+@keyframes scanline-flicker {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.98; }
+}
+
+/* Moving scanline */
+.scanlines::after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 4px;
   background: linear-gradient(
     to bottom,
-    rgb(var(--background-start-rgb)),
-    rgb(var(--background-end-rgb))
+    transparent,
+    rgba(0, 255, 136, 0.1),
+    transparent
   );
-  min-height: 100vh;
+  animation: scanline-move 8s linear infinite;
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
+@keyframes scanline-move {
+  0% { top: -4px; }
+  100% { top: 100%; }
 }
 
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
+/* ============================================================================
+   CRT OVERLAY EFFECTS
+   ============================================================================ */
+
+.crt-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(0, 255, 136, 0.03) 0%,
+      transparent 50%,
+      rgba(0, 255, 136, 0.02) 100%
+    );
 }
 
-::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 4px;
+/* Phosphor glow effect */
+.crt-overlay::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at 50% 50%,
+    rgba(0, 255, 136, 0.05) 0%,
+    transparent 70%
+  );
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #a1a1a1;
+/* ============================================================================
+   GLITCH EFFECT
+   ============================================================================ */
+
+.glitch {
+  animation: glitch 0.15s ease-in-out;
 }
 
-/* Animations */
-@keyframes pulse-ring {
+@keyframes glitch {
   0% {
-    transform: scale(0.8);
-    opacity: 1;
+    transform: translate(0);
+    filter: hue-rotate(0deg);
+  }
+  20% {
+    transform: translate(-2px, 2px);
+    filter: hue-rotate(90deg);
+  }
+  40% {
+    transform: translate(-2px, -2px);
+    filter: hue-rotate(-90deg);
+  }
+  60% {
+    transform: translate(2px, 2px);
+    clip-path: inset(20% 0 30% 0);
+  }
+  80% {
+    transform: translate(2px, -2px);
+    clip-path: inset(50% 0 10% 0);
   }
   100% {
-    transform: scale(1.5);
-    opacity: 0;
+    transform: translate(0);
+    filter: hue-rotate(0deg);
+    clip-path: none;
   }
 }
 
-.animate-pulse-ring {
-  animation: pulse-ring 1.5s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+/* ============================================================================
+   CODEC PANEL
+   ============================================================================ */
+
+.codec-panel {
+  background: var(--codec-bg-panel);
+  border: 1px solid var(--codec-green-dim);
+  border-radius: 4px;
+  position: relative;
+  box-shadow:
+    0 0 20px var(--codec-green-glow),
+    inset 0 0 30px rgba(0, 40, 20, 0.5);
 }
 
-@keyframes fade-in {
+.codec-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--codec-green), transparent);
+}
+
+.codec-panel::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--codec-green-dim), transparent);
+}
+
+/* ============================================================================
+   HEADER
+   ============================================================================ */
+
+.codec-header {
+  background: linear-gradient(180deg, rgba(0, 40, 20, 0.95) 0%, rgba(0, 20, 10, 0.9) 100%);
+  border-bottom: 1px solid var(--codec-green-dim);
+  box-shadow: 0 2px 20px rgba(0, 255, 136, 0.1);
+}
+
+/* ============================================================================
+   HEX ICONS
+   ============================================================================ */
+
+.codec-hex-icon {
+  filter: drop-shadow(0 0 10px var(--codec-green-glow));
+  animation: hex-pulse 2s ease-in-out infinite;
+}
+
+.codec-hex-icon-sm {
+  filter: drop-shadow(0 0 5px var(--codec-green-glow));
+}
+
+@keyframes hex-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ============================================================================
+   BUTTONS
+   ============================================================================ */
+
+.codec-button {
+  background: linear-gradient(180deg, rgba(0, 80, 40, 0.8) 0%, rgba(0, 40, 20, 0.9) 100%);
+  border: 1px solid var(--codec-green);
+  color: var(--codec-green);
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+  text-transform: uppercase;
+}
+
+.codec-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(0, 255, 136, 0.2), transparent);
+  transition: left 0.3s ease;
+}
+
+.codec-button:hover::before {
+  left: 100%;
+}
+
+.codec-button:hover {
+  background: linear-gradient(180deg, rgba(0, 100, 50, 0.9) 0%, rgba(0, 60, 30, 1) 100%);
+  box-shadow: 0 0 20px var(--codec-green-glow);
+  text-shadow: 0 0 10px var(--codec-green);
+}
+
+.codec-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--codec-green-dim);
+  color: var(--codec-green-dim);
+}
+
+.codec-button-danger {
+  background: linear-gradient(180deg, rgba(80, 0, 0, 0.8) 0%, rgba(40, 0, 0, 0.9) 100%);
+  border: 1px solid #ff4444;
+  color: #ff4444;
+}
+
+.codec-button-danger:hover {
+  background: linear-gradient(180deg, rgba(100, 0, 0, 0.9) 0%, rgba(60, 0, 0, 1) 100%);
+  box-shadow: 0 0 20px rgba(255, 68, 68, 0.3);
+}
+
+/* ============================================================================
+   ICON BUTTONS
+   ============================================================================ */
+
+.codec-icon-button {
+  padding: 0.5rem;
+  color: var(--codec-green-dim);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.codec-icon-button:hover {
+  color: var(--codec-green);
+  border-color: var(--codec-green-dim);
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.codec-icon-button.active {
+  color: var(--codec-green);
+  border-color: var(--codec-green);
+  background: rgba(0, 255, 136, 0.15);
+}
+
+/* ============================================================================
+   INPUTS
+   ============================================================================ */
+
+.codec-input {
+  background: var(--codec-bg-input);
+  border: 1px solid var(--codec-green-dim);
+  color: var(--codec-green);
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  caret-color: var(--codec-green);
+}
+
+.codec-input::placeholder {
+  color: var(--codec-green-dim);
+  opacity: 0.6;
+}
+
+.codec-input:focus {
+  outline: none;
+  border-color: var(--codec-green);
+  box-shadow: 0 0 15px var(--codec-green-glow);
+}
+
+.codec-input:disabled {
+  opacity: 0.5;
+}
+
+/* ============================================================================
+   INPUT AREA
+   ============================================================================ */
+
+.codec-input-area {
+  background: linear-gradient(180deg, rgba(0, 20, 10, 0.9) 0%, rgba(0, 30, 15, 0.95) 100%);
+  border-top: 1px solid var(--codec-green-dim);
+}
+
+/* ============================================================================
+   TOGGLE SWITCH
+   ============================================================================ */
+
+.codec-toggle {
+  width: 48px;
+  height: 24px;
+  background: rgba(0, 30, 15, 0.8);
+  border: 1px solid var(--codec-green-dim);
+  border-radius: 12px;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.codec-toggle.active {
+  background: rgba(0, 100, 50, 0.5);
+  border-color: var(--codec-green);
+}
+
+.codec-toggle-knob {
+  width: 18px;
+  height: 18px;
+  background: var(--codec-green-dim);
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: all 0.3s ease;
+}
+
+.codec-toggle.active .codec-toggle-knob {
+  left: 26px;
+  background: var(--codec-green);
+  box-shadow: 0 0 10px var(--codec-green-glow);
+}
+
+/* ============================================================================
+   STATUS INDICATORS
+   ============================================================================ */
+
+.codec-status-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(0, 40, 20, 0.8);
+  border: 1px solid var(--codec-green-dim);
+  border-radius: 20px;
+}
+
+.codec-status-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--codec-green);
+  border-radius: 50%;
+  animation: status-pulse 1s ease-in-out infinite;
+}
+
+.codec-status-dot.processing {
+  background: #ffaa00;
+  animation: status-blink 0.5s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 10px var(--codec-green-glow); }
+  50% { opacity: 0.5; box-shadow: none; }
+}
+
+@keyframes status-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.codec-status-indicator {
+  padding: 4px 12px;
+  background: rgba(0, 255, 136, 0.15);
+  border: 1px solid var(--codec-green);
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--codec-green);
+  animation: indicator-flash 2s ease-in-out infinite;
+}
+
+@keyframes indicator-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ============================================================================
+   MESSAGES
+   ============================================================================ */
+
+.codec-messages {
+  scrollbar-width: thin;
+  scrollbar-color: var(--codec-green-dim) transparent;
+}
+
+.codec-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.codec-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.codec-messages::-webkit-scrollbar-thumb {
+  background: var(--codec-green-dim);
+  border-radius: 3px;
+}
+
+.codec-message-animate {
+  animation: message-appear 0.3s ease-out;
+}
+
+@keyframes message-appear {
   from {
     opacity: 0;
     transform: translateY(10px);
@@ -64,6 +475,148 @@ body {
   }
 }
 
-.animate-fade-in {
-  animation: fade-in 0.3s ease-out forwards;
+.codec-message-ai {
+  background: rgba(0, 40, 20, 0.8);
+  border: 1px solid var(--codec-green-dim);
+  border-radius: 4px 16px 16px 4px;
+  color: var(--codec-green);
+}
+
+.codec-message-user {
+  background: rgba(0, 60, 100, 0.6);
+  border: 1px solid var(--codec-blue-dim);
+  border-radius: 16px 4px 4px 16px;
+  color: var(--codec-blue);
+}
+
+.codec-message-system {
+  background: rgba(40, 40, 0, 0.6);
+  border: 1px solid #aaaa00;
+  border-radius: 8px;
+  color: #dddd00;
+}
+
+/* ============================================================================
+   TARGET INFO BOX
+   ============================================================================ */
+
+.codec-target-info {
+  background: rgba(0, 30, 15, 0.9);
+  border: 1px solid var(--codec-green);
+  border-radius: 4px;
+  padding: 8px;
+  box-shadow: inset 0 0 10px rgba(0, 255, 136, 0.1);
+}
+
+/* ============================================================================
+   ERROR & SUCCESS STATES
+   ============================================================================ */
+
+.codec-error {
+  background: rgba(80, 0, 0, 0.5);
+  border: 1px solid #ff4444;
+  border-radius: 4px;
+  color: #ff6666;
+}
+
+.codec-success {
+  background: rgba(0, 60, 30, 0.5);
+  border: 1px solid var(--codec-green);
+  border-radius: 4px;
+  color: var(--codec-green);
+}
+
+/* ============================================================================
+   CURSOR BLINK
+   ============================================================================ */
+
+.codec-cursor {
+  animation: cursor-blink 0.7s step-end infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ============================================================================
+   TEXT UTILITIES
+   ============================================================================ */
+
+.text-codec-green {
+  color: var(--codec-green);
+}
+
+.text-codec-green-dim {
+  color: var(--codec-green-dim);
+}
+
+.text-codec-blue {
+  color: var(--codec-blue);
+}
+
+/* ============================================================================
+   PHOSPHOR TEXT GLOW
+   ============================================================================ */
+
+.codec-glow {
+  text-shadow:
+    0 0 5px var(--codec-green-glow),
+    0 0 10px var(--codec-green-glow),
+    0 0 20px var(--codec-green-glow);
+}
+
+/* ============================================================================
+   VHS NOISE (OPTIONAL)
+   ============================================================================ */
+
+@keyframes noise {
+  0%, 100% { background-position: 0 0; }
+  10% { background-position: -5% -10%; }
+  20% { background-position: -15% 5%; }
+  30% { background-position: 7% -25%; }
+  40% { background-position: 20% 25%; }
+  50% { background-position: -25% 10%; }
+  60% { background-position: 15% 5%; }
+  70% { background-position: 0 15%; }
+  80% { background-position: 25% 35%; }
+  90% { background-position: -10% 10%; }
+}
+
+/* ============================================================================
+   RESPONSIVE ADJUSTMENTS
+   ============================================================================ */
+
+@media (max-width: 640px) {
+  .codec-panel {
+    margin: 0.5rem;
+  }
+
+  .scanlines {
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.1),
+      rgba(0, 0, 0, 0.1) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+}
+
+/* ============================================================================
+   THREE.JS CANVAS CONTAINER
+   ============================================================================ */
+
+canvas {
+  display: block;
+}
+
+/* ============================================================================
+   TYPOGRAPHY
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+.font-mono {
+  font-family: 'Share Tech Mono', 'Courier New', monospace;
 }
