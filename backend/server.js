@@ -202,15 +202,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'codec-480810';
 
 // Vertex AI Native Audio models (only in us-central1)
-// Try multiple models in order of preference
+// Use the LATEST model from Gemini docs
 const VERTEX_REGION = 'us-central1';
-const GEMINI_LIVE_MODELS = [
-    'gemini-2.0-flash-live-001',                           // Latest stable
-    'gemini-live-2.5-flash-preview-native-audio-09-2025',  // Working native audio
-    'gemini-2.5-flash-native-audio-preview-12-2025',       // Newer (may not be available)
-    'gemini-live-2.5-flash-preview'                        // Fallback
-];
-let GEMINI_LIVE_MODEL = GEMINI_LIVE_MODELS[0]; // Start with first
+const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025'; // Latest from docs
 
 // Standard model for text chat (REST API with API key)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
@@ -907,7 +901,7 @@ ENDINGS - When they say bye:
 VOICE: Warm, quick, natural. Australian accent. No filler words.`;
 }
 
-async function preEstablishGemini(sessionId, state, modelIndex = 0) {
+async function preEstablishGemini(sessionId, state) {
     // Get access token for Vertex AI
     console.log(`[GEMINI] Getting access token for ${sessionId}...`);
     const accessToken = await getAccessToken();
@@ -916,8 +910,7 @@ async function preEstablishGemini(sessionId, state, modelIndex = 0) {
     }
 
     const wsUrl = getVertexWsUrl(accessToken);
-    const currentModel = GEMINI_LIVE_MODELS[modelIndex];
-    console.log(`[GEMINI] Connecting to Vertex AI with model: ${currentModel} (attempt ${modelIndex + 1}/${GEMINI_LIVE_MODELS.length})`);
+    console.log(`[GEMINI] Connecting to Vertex AI with model: ${GEMINI_LIVE_MODEL}`);
 
     // Initialize transcript for this session
     callTranscripts.set(sessionId, []);
@@ -927,28 +920,19 @@ async function preEstablishGemini(sessionId, state, modelIndex = 0) {
         let setupSent = false;
 
         const timeout = setTimeout(() => {
-            console.error(`[GEMINI] Connection timeout for ${sessionId} with model ${currentModel}`);
+            console.error(`[GEMINI] Connection timeout for ${sessionId}`);
             geminiWs.close();
             pendingGeminiSessions.delete(sessionId);
-
-            // Try next model if available
-            if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
-                console.log(`[GEMINI] Trying next model...`);
-                preEstablishGemini(sessionId, state, modelIndex + 1)
-                    .then(resolve)
-                    .catch(reject);
-            } else {
-                reject(new Error('All Gemini models failed to connect'));
-            }
-        }, 20000); // Increased timeout to 20s
+            reject(new Error('Gemini connection timeout'));
+        }, 30000); // 30s timeout
 
         geminiWs.on('open', () => {
-            console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup with ${currentModel}...`);
+            console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup...`);
 
             const prompt = buildVoicePrompt(state);
 
             // Vertex AI model path format
-            const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${currentModel}`;
+            const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
 
             // Initialize conversation state for this call
             initCallConversationState(sessionId);
@@ -991,8 +975,7 @@ async function preEstablishGemini(sessionId, state, modelIndex = 0) {
 
                 if (msg.setupComplete) {
                     clearTimeout(timeout);
-                    console.log(`[GEMINI] Setup complete for ${sessionId} with model ${currentModel}`);
-                    GEMINI_LIVE_MODEL = currentModel; // Remember working model
+                    console.log(`[GEMINI] Setup complete for ${sessionId}`);
 
                     // Store the ready session
                     pendingGeminiSessions.set(sessionId, {
@@ -1007,19 +990,10 @@ async function preEstablishGemini(sessionId, state, modelIndex = 0) {
 
                 // Log any errors from Gemini
                 if (msg.error) {
-                    console.error(`[GEMINI] Error from ${currentModel}:`, msg.error);
+                    console.error(`[GEMINI] Error:`, msg.error);
                     clearTimeout(timeout);
                     geminiWs.close();
-
-                    // Try next model if available
-                    if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
-                        console.log(`[GEMINI] Model ${currentModel} failed, trying next...`);
-                        preEstablishGemini(sessionId, state, modelIndex + 1)
-                            .then(resolve)
-                            .catch(reject);
-                    } else {
-                        reject(new Error(msg.error.message || 'All Gemini models failed'));
-                    }
+                    reject(new Error(msg.error.message || 'Gemini setup failed'));
                 }
             } catch (e) {
                 console.error(`[GEMINI] Parse error:`, e.message);
@@ -1027,31 +1001,17 @@ async function preEstablishGemini(sessionId, state, modelIndex = 0) {
         });
 
         geminiWs.on('error', (e) => {
-            console.error(`[GEMINI] WebSocket error for ${sessionId} with ${currentModel}:`, e.message);
+            console.error(`[GEMINI] WebSocket error for ${sessionId}:`, e.message);
             clearTimeout(timeout);
             pendingGeminiSessions.delete(sessionId);
-
-            // Try next model if available
-            if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
-                console.log(`[GEMINI] Trying next model after error...`);
-                preEstablishGemini(sessionId, state, modelIndex + 1)
-                    .then(resolve)
-                    .catch(reject);
-            } else {
-                reject(e);
-            }
+            reject(e);
         });
 
         geminiWs.on('close', (code, reason) => {
             console.log(`[GEMINI] WebSocket closed for ${sessionId}: ${code} ${reason}`);
-            // If closed before setup complete and not timed out, it might be a model issue
             if (!setupSent) {
                 clearTimeout(timeout);
-                if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
-                    preEstablishGemini(sessionId, state, modelIndex + 1)
-                        .then(resolve)
-                        .catch(reject);
-                }
+                reject(new Error(`Connection closed before setup: ${code}`));
             }
         });
     });
