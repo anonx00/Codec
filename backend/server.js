@@ -963,7 +963,7 @@ async function preEstablishGemini(sessionId, state) {
                 }
             };
 
-            console.log(`[GEMINI] Setup msg: model=${currentModel}`);
+            console.log(`[GEMINI] Setup msg: model=${GEMINI_LIVE_MODEL}`);
             geminiWs.send(JSON.stringify(setupMsg));
             setupSent = true;
         });
