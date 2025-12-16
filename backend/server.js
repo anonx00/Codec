@@ -202,9 +202,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'codec-480810';
 
 // Vertex AI Native Audio models (only in us-central1)
-// Use the LATEST model from Gemini docs
+// Vertex AI Live API model (confirmed from official docs)
 const VERTEX_REGION = 'us-central1';
-const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025'; // Latest from docs
+const GEMINI_LIVE_MODEL = 'gemini-2.0-flash-live-preview-04-09'; // Official Vertex AI model
 
 // Standard model for text chat (REST API with API key)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
