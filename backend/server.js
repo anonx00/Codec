@@ -201,10 +201,16 @@ setInterval(() => {
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'codec-480810';
 
-// Vertex AI Native Audio model (only in us-central1)
-// Using the latest native audio model with thinking capabilities
+// Vertex AI Native Audio models (only in us-central1)
+// Try multiple models in order of preference
 const VERTEX_REGION = 'us-central1';
-const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const GEMINI_LIVE_MODELS = [
+    'gemini-2.0-flash-live-001',                           // Latest stable
+    'gemini-live-2.5-flash-preview-native-audio-09-2025',  // Working native audio
+    'gemini-2.5-flash-native-audio-preview-12-2025',       // Newer (may not be available)
+    'gemini-live-2.5-flash-preview'                        // Fallback
+];
+let GEMINI_LIVE_MODEL = GEMINI_LIVE_MODELS[0]; // Start with first
 
 // Standard model for text chat (REST API with API key)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
@@ -918,7 +924,7 @@ STYLE:
 - If they're chatty, you can be warmer`;
 }
 
-async function preEstablishGemini(sessionId, state) {
+async function preEstablishGemini(sessionId, state, modelIndex = 0) {
     // Get access token for Vertex AI
     console.log(`[GEMINI] Getting access token for ${sessionId}...`);
     const accessToken = await getAccessToken();
@@ -927,32 +933,44 @@ async function preEstablishGemini(sessionId, state) {
     }
 
     const wsUrl = getVertexWsUrl(accessToken);
-    console.log(`[GEMINI] Connecting to Vertex AI Live API for ${sessionId}...`);
+    const currentModel = GEMINI_LIVE_MODELS[modelIndex];
+    console.log(`[GEMINI] Connecting to Vertex AI with model: ${currentModel} (attempt ${modelIndex + 1}/${GEMINI_LIVE_MODELS.length})`);
 
     // Initialize transcript for this session
     callTranscripts.set(sessionId, []);
 
     return new Promise((resolve, reject) => {
         const geminiWs = new WebSocket(wsUrl);
+        let setupSent = false;
 
         const timeout = setTimeout(() => {
-            console.error(`[GEMINI] Connection timeout for ${sessionId}`);
+            console.error(`[GEMINI] Connection timeout for ${sessionId} with model ${currentModel}`);
             geminiWs.close();
             pendingGeminiSessions.delete(sessionId);
-            reject(new Error('Gemini connection timeout'));
-        }, 15000);
+
+            // Try next model if available
+            if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
+                console.log(`[GEMINI] Trying next model...`);
+                preEstablishGemini(sessionId, state, modelIndex + 1)
+                    .then(resolve)
+                    .catch(reject);
+            } else {
+                reject(new Error('All Gemini models failed to connect'));
+            }
+        }, 20000); // Increased timeout to 20s
 
         geminiWs.on('open', () => {
-            console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup...`);
+            console.log(`[GEMINI] WebSocket open for ${sessionId}, sending setup with ${currentModel}...`);
 
             const prompt = buildVoicePrompt(state);
 
             // Vertex AI model path format
-            const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
+            const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${currentModel}`;
 
             // Initialize conversation state for this call
             initCallConversationState(sessionId);
 
+            // Use simpler config that works with all models
             const setupMsg = {
                 setup: {
                     model: modelPath,
@@ -960,41 +978,21 @@ async function preEstablishGemini(sessionId, state) {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
                             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
-                        },
-                        // Enable thinking for better responses
-                        thinkingConfig: {
-                            thinkingBudget: 512  // Moderate thinking for phone calls
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
-                    // Enable input and output transcription for better tracking
-                    inputAudioTranscription: {},
-                    outputAudioTranscription: {},
-                    // Enhanced VAD configuration for natural conversation
+                    // Basic VAD configuration that works with all models
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            disabled: false,
-                            // Higher sensitivity to detect when user starts speaking
-                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                            // Lower end sensitivity to wait for user to fully finish
-                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-                            // Longer silence before considering speech ended (wait for user)
-                            silenceDurationMs: 1200,
-                            // Some padding before speech detection
-                            prefixPaddingMs: 100
+                            disabled: false
                         }
-                    },
-                    // Enable proactive audio - AI decides when to respond
-                    proactivity: {
-                        proactiveAudio: true
-                    },
-                    // Enable affective dialog for natural emotional responses
-                    enableAffectiveDialog: true
+                    }
                 }
             };
 
-            console.log(`[GEMINI] Setup msg: model=${modelPath}, VAD=enhanced, thinking=enabled`);
+            console.log(`[GEMINI] Setup msg: model=${currentModel}`);
             geminiWs.send(JSON.stringify(setupMsg));
+            setupSent = true;
         });
 
         geminiWs.on('message', (data) => {
@@ -1004,7 +1002,8 @@ async function preEstablishGemini(sessionId, state) {
 
                 if (msg.setupComplete) {
                     clearTimeout(timeout);
-                    console.log(`[GEMINI] Setup complete for ${sessionId}`);
+                    console.log(`[GEMINI] Setup complete for ${sessionId} with model ${currentModel}`);
+                    GEMINI_LIVE_MODEL = currentModel; // Remember working model
 
                     // Store the ready session
                     pendingGeminiSessions.set(sessionId, {
@@ -1019,9 +1018,19 @@ async function preEstablishGemini(sessionId, state) {
 
                 // Log any errors from Gemini
                 if (msg.error) {
-                    console.error(`[GEMINI] Error:`, msg.error);
+                    console.error(`[GEMINI] Error from ${currentModel}:`, msg.error);
                     clearTimeout(timeout);
-                    reject(new Error(msg.error.message || 'Gemini error'));
+                    geminiWs.close();
+
+                    // Try next model if available
+                    if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
+                        console.log(`[GEMINI] Model ${currentModel} failed, trying next...`);
+                        preEstablishGemini(sessionId, state, modelIndex + 1)
+                            .then(resolve)
+                            .catch(reject);
+                    } else {
+                        reject(new Error(msg.error.message || 'All Gemini models failed'));
+                    }
                 }
             } catch (e) {
                 console.error(`[GEMINI] Parse error:`, e.message);
@@ -1029,14 +1038,32 @@ async function preEstablishGemini(sessionId, state) {
         });
 
         geminiWs.on('error', (e) => {
-            console.error(`[GEMINI] WebSocket error for ${sessionId}:`, e.message);
+            console.error(`[GEMINI] WebSocket error for ${sessionId} with ${currentModel}:`, e.message);
             clearTimeout(timeout);
             pendingGeminiSessions.delete(sessionId);
-            reject(e);
+
+            // Try next model if available
+            if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
+                console.log(`[GEMINI] Trying next model after error...`);
+                preEstablishGemini(sessionId, state, modelIndex + 1)
+                    .then(resolve)
+                    .catch(reject);
+            } else {
+                reject(e);
+            }
         });
 
         geminiWs.on('close', (code, reason) => {
             console.log(`[GEMINI] WebSocket closed for ${sessionId}: ${code} ${reason}`);
+            // If closed before setup complete and not timed out, it might be a model issue
+            if (!setupSent) {
+                clearTimeout(timeout);
+                if (modelIndex + 1 < GEMINI_LIVE_MODELS.length) {
+                    preEstablishGemini(sessionId, state, modelIndex + 1)
+                        .then(resolve)
+                        .catch(reject);
+                }
+            }
         });
     });
 }
@@ -1631,7 +1658,7 @@ wss.on('connection', (twilioWs) => {
         geminiWs = new WebSocket(wsUrl);
 
         geminiWs.on('open', () => {
-            console.log('[GEMINI] Fallback connected to Vertex AI');
+            console.log(`[GEMINI] Fallback connected to Vertex AI with model: ${GEMINI_LIVE_MODEL}`);
 
             // Initialize conversation state for this call
             if (callSid) initCallConversationState(callSid);
@@ -1642,6 +1669,7 @@ wss.on('connection', (twilioWs) => {
             // Vertex AI model path format
             const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
 
+            // Use simpler config that works with all models
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: modelPath,
@@ -1649,28 +1677,14 @@ wss.on('connection', (twilioWs) => {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
                             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
-                        },
-                        // Enable thinking for better responses
-                        thinkingConfig: {
-                            thinkingBudget: 512
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
-                    // Enable input and output transcription
-                    inputAudioTranscription: {},
-                    outputAudioTranscription: {},
-                    // Enhanced VAD configuration
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            disabled: false,
-                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-                            silenceDurationMs: 1200,
-                            prefixPaddingMs: 100
+                            disabled: false
                         }
-                    },
-                    proactivity: { proactiveAudio: true },
-                    enableAffectiveDialog: true
+                    }
                 }
             }));
         });

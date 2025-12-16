@@ -612,6 +612,235 @@ canvas {
 }
 
 /* ============================================================================
+   MGS HUD PANELS - For Three.js Overlay
+   ============================================================================ */
+
+.codec-hud-panel {
+  background: rgba(0, 20, 10, 0.85);
+  border: 1px solid var(--codec-green);
+  border-radius: 2px;
+  box-shadow:
+    0 0 20px rgba(0, 255, 136, 0.2),
+    inset 0 0 15px rgba(0, 255, 136, 0.05);
+  backdrop-filter: blur(4px);
+  position: relative;
+}
+
+.codec-hud-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--codec-green), transparent);
+}
+
+.codec-hud-panel::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--codec-green-dim), transparent);
+}
+
+/* Corner brackets effect */
+.codec-hud-panel > *:first-child::before {
+  content: '[ ';
+  color: var(--codec-green-dim);
+  opacity: 0.7;
+}
+
+.codec-hud-panel > *:first-child::after {
+  content: ' ]';
+  color: var(--codec-green-dim);
+  opacity: 0.7;
+}
+
+/* ============================================================================
+   LARGE STATUS INDICATOR - For Calling View
+   ============================================================================ */
+
+.codec-status-indicator-large {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.codec-status-dot-large {
+  width: 20px;
+  height: 20px;
+  background: var(--codec-green);
+  border-radius: 50%;
+  position: relative;
+  animation: status-pulse-large 1.5s ease-in-out infinite;
+}
+
+.codec-status-dot-large.active {
+  background: var(--codec-green);
+  animation: status-pulse-active 0.8s ease-in-out infinite;
+}
+
+.codec-status-dot-large.processing {
+  background: #ffaa00;
+  animation: status-pulse-processing 0.5s ease-in-out infinite;
+}
+
+/* Pulse rings */
+.codec-status-dot-large::before,
+.codec-status-dot-large::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px solid var(--codec-green);
+  opacity: 0;
+}
+
+.codec-status-dot-large::before {
+  width: 40px;
+  height: 40px;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+.codec-status-dot-large::after {
+  width: 60px;
+  height: 60px;
+  animation: pulse-ring 2s ease-out infinite 0.5s;
+}
+
+.codec-status-dot-large.active::before,
+.codec-status-dot-large.active::after {
+  animation: pulse-ring-active 1s ease-out infinite;
+}
+
+.codec-status-dot-large.active::after {
+  animation-delay: 0.3s;
+}
+
+@keyframes status-pulse-large {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 10px var(--codec-green-glow), 0 0 30px var(--codec-green-glow);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 5px var(--codec-green-glow);
+  }
+}
+
+@keyframes status-pulse-active {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 15px var(--codec-green), 0 0 40px var(--codec-green-glow);
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    box-shadow: 0 0 25px var(--codec-green), 0 0 60px var(--codec-green-glow);
+    transform: scale(1.1);
+  }
+}
+
+@keyframes status-pulse-processing {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 15px rgba(255, 170, 0, 0.5);
+  }
+  50% {
+    opacity: 0.5;
+    box-shadow: 0 0 5px rgba(255, 170, 0, 0.3);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    opacity: 0.6;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.5);
+  }
+}
+
+@keyframes pulse-ring-active {
+  0% {
+    opacity: 0.8;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2);
+  }
+}
+
+/* ============================================================================
+   CODEC TRANSMISSION ACTIVE - Additional Animation
+   ============================================================================ */
+
+.codec-transmission-active {
+  position: relative;
+}
+
+.codec-transmission-active::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--codec-green);
+  border-radius: 4px;
+  animation: transmission-border 1s ease-in-out infinite;
+}
+
+@keyframes transmission-border {
+  0%, 100% {
+    border-color: var(--codec-green);
+    box-shadow: 0 0 10px var(--codec-green-glow);
+  }
+  50% {
+    border-color: var(--codec-green-dim);
+    box-shadow: 0 0 5px rgba(0, 255, 136, 0.1);
+  }
+}
+
+/* ============================================================================
+   WAVEFORM BAR ANIMATION
+   ============================================================================ */
+
+.codec-waveform-bar {
+  background: var(--codec-green);
+  animation: waveform-pulse 0.5s ease-in-out infinite;
+}
+
+@keyframes waveform-pulse {
+  0%, 100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ============================================================================
+   SIGNAL STRENGTH BARS
+   ============================================================================ */
+
+.codec-signal-bar {
+  background: var(--codec-green);
+  transition: all 0.3s ease;
+}
+
+.codec-signal-bar.inactive {
+  background: var(--codec-green-dim);
+  opacity: 0.3;
+}
+
+/* ============================================================================
    TYPOGRAPHY
    ============================================================================ */
 
@@ -619,4 +848,20 @@ canvas {
 
 .font-mono {
   font-family: 'Share Tech Mono', 'Courier New', monospace;
+}
+
+/* ============================================================================
+   FULL SCREEN CALL VIEW
+   ============================================================================ */
+
+.codec-fullscreen-call {
+  position: relative;
+  background: #000a04;
+}
+
+.codec-fullscreen-call canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }

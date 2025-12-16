@@ -1,7 +1,7 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  CODEC v7.0 - MGS TACTICAL AI - GCP CLOUD SHELL QUICK DEPLOY              ║
-# ║  Enhanced Audio Processing + Three.js Retro Frontend                       ║
+# ║  CODEC v8.0 - MGS TACTICAL AI - GCP CLOUD SHELL QUICK DEPLOY              ║
+# ║  Enhanced Three.js Codec + Gemini Model Fallback                           ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
 set -e
@@ -15,7 +15,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     CODEC v7.0 - TACTICAL COMMUNICATIONS SYSTEM           ║${NC}"
+echo -e "${CYAN}║     CODEC v8.0 - TACTICAL COMMUNICATIONS SYSTEM           ║${NC}"
 echo -e "${CYAN}║         GCP CLOUD SHELL QUICK DEPLOYMENT                  ║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -239,7 +239,7 @@ fi
 # Final output
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║              CODEC v7.0 DEPLOYMENT COMPLETE               ║${NC}"
+echo -e "${GREEN}║              CODEC v8.0 DEPLOYMENT COMPLETE               ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "Frontend URL:  ${CYAN}$FRONTEND_URL${NC}"
