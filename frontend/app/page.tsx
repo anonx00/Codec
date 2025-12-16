@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { Text, RoundedBox } from '@react-three/drei';
+import { useState, useEffect, useRef, useCallback, Suspense, useMemo } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Text, Effects } from '@react-three/drei';
 import * as THREE from 'three';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
@@ -46,213 +46,485 @@ interface InboundConfig {
 type View = 'login' | 'chat' | 'calling' | 'settings';
 
 // ============================================================================
-// THREE.JS COMPONENTS
+// THREE.JS COMPONENTS - MGS CODEC STYLE
 // ============================================================================
 
-// Animated codec portrait mesh
-function CodecPortrait({ speaking, isAI }: { speaking: boolean; isAI: boolean }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const glowRef = useRef<THREE.Mesh>(null);
-  const [pulse, setPulse] = useState(0);
+// Animated grid background
+function GridBackground() {
+  const gridRef = useRef<THREE.Group>(null);
 
   useFrame((state) => {
-    if (meshRef.current) {
-      // Subtle floating animation
-      meshRef.current.position.y = Math.sin(state.clock.elapsedTime * 2) * 0.02;
-
-      // Speaking animation
-      if (speaking) {
-        meshRef.current.scale.x = 1 + Math.sin(state.clock.elapsedTime * 15) * 0.02;
-        meshRef.current.scale.y = 1 + Math.cos(state.clock.elapsedTime * 12) * 0.03;
-      }
-    }
-
-    if (glowRef.current && speaking) {
-      const material = glowRef.current.material as THREE.MeshBasicMaterial;
-      material.opacity = 0.3 + Math.sin(state.clock.elapsedTime * 8) * 0.2;
-    }
-
-    setPulse(state.clock.elapsedTime);
-  });
-
-  const color = isAI ? '#00ff88' : '#00aaff';
-  const glowColor = isAI ? '#00ff88' : '#00aaff';
-
-  return (
-    <group>
-      {/* Glow effect */}
-      <mesh ref={glowRef} position={[0, 0, -0.1]}>
-        <circleGeometry args={[0.55, 32]} />
-        <meshBasicMaterial color={glowColor} transparent opacity={speaking ? 0.4 : 0.1} />
-      </mesh>
-
-      {/* Portrait frame */}
-      <mesh ref={meshRef}>
-        <ringGeometry args={[0.4, 0.5, 6]} />
-        <meshBasicMaterial color={color} wireframe />
-      </mesh>
-
-      {/* Inner hexagon */}
-      <mesh rotation={[0, 0, Math.PI / 6]}>
-        <ringGeometry args={[0.25, 0.35, 6]} />
-        <meshBasicMaterial color={color} transparent opacity={0.5} />
-      </mesh>
-
-      {/* Center indicator */}
-      <mesh>
-        <circleGeometry args={[0.15, 6]} />
-        <meshBasicMaterial color={speaking ? '#ffffff' : color} transparent opacity={speaking ? 0.8 : 0.3} />
-      </mesh>
-
-      {/* Scanline effect */}
-      {Array.from({ length: 8 }).map((_, i) => (
-        <mesh key={i} position={[0, -0.4 + i * 0.1 + (pulse % 0.1), 0.01]}>
-          <planeGeometry args={[1, 0.01]} />
-          <meshBasicMaterial color={color} transparent opacity={0.1} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-// Audio waveform visualization
-function AudioWaveform({ active }: { active: boolean }) {
-  const barsRef = useRef<THREE.Group>(null);
-
-  useFrame((state) => {
-    if (barsRef.current && active) {
-      barsRef.current.children.forEach((child, i) => {
+    if (gridRef.current) {
+      // Subtle pulse effect
+      gridRef.current.children.forEach((child, i) => {
         const mesh = child as THREE.Mesh;
-        const scale = 0.5 + Math.sin(state.clock.elapsedTime * 10 + i * 0.5) * 0.5;
-        mesh.scale.y = scale;
+        const material = mesh.material as THREE.MeshBasicMaterial;
+        material.opacity = 0.1 + Math.sin(state.clock.elapsedTime * 2 + i * 0.1) * 0.05;
       });
     }
   });
 
   return (
-    <group ref={barsRef} position={[0, -0.7, 0]}>
-      {Array.from({ length: 16 }).map((_, i) => (
-        <mesh key={i} position={[-0.45 + i * 0.06, 0, 0]}>
-          <boxGeometry args={[0.04, 0.15, 0.01]} />
-          <meshBasicMaterial color="#00ff88" transparent opacity={active ? 0.8 : 0.2} />
+    <group ref={gridRef} position={[0, 0, -2]}>
+      {/* Vertical lines */}
+      {Array.from({ length: 25 }).map((_, i) => (
+        <mesh key={`v-${i}`} position={[-3 + i * 0.25, 0, 0]}>
+          <planeGeometry args={[0.005, 6]} />
+          <meshBasicMaterial color="#00ff88" transparent opacity={0.1} />
+        </mesh>
+      ))}
+      {/* Horizontal lines */}
+      {Array.from({ length: 20 }).map((_, i) => (
+        <mesh key={`h-${i}`} position={[0, -2.5 + i * 0.25, 0]}>
+          <planeGeometry args={[8, 0.005]} />
+          <meshBasicMaterial color="#00ff88" transparent opacity={0.1} />
         </mesh>
       ))}
     </group>
   );
 }
 
-// MGS-style codec frame
-function CodecFrame() {
+// Animated static/noise particles
+function StaticNoise({ active }: { active: boolean }) {
+  const particlesRef = useRef<THREE.Points>(null);
+  const particleCount = 200;
+
+  const positions = useMemo(() => {
+    const pos = new Float32Array(particleCount * 3);
+    for (let i = 0; i < particleCount; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 6;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * 4;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+    }
+    return pos;
+  }, []);
+
+  useFrame((state) => {
+    if (particlesRef.current && active) {
+      const positions = particlesRef.current.geometry.attributes.position.array as Float32Array;
+      for (let i = 0; i < particleCount; i++) {
+        // Random flicker
+        if (Math.random() > 0.95) {
+          positions[i * 3] = (Math.random() - 0.5) * 6;
+          positions[i * 3 + 1] = (Math.random() - 0.5) * 4;
+        }
+      }
+      particlesRef.current.geometry.attributes.position.needsUpdate = true;
+
+      const material = particlesRef.current.material as THREE.PointsMaterial;
+      material.opacity = 0.3 + Math.sin(state.clock.elapsedTime * 20) * 0.2;
+    }
+  });
+
+  return (
+    <points ref={particlesRef}>
+      <bufferGeometry>
+        <bufferAttribute
+          attach="attributes-position"
+          count={particleCount}
+          array={positions}
+          itemSize={3}
+        />
+      </bufferGeometry>
+      <pointsMaterial
+        color="#00ff88"
+        size={0.02}
+        transparent
+        opacity={active ? 0.4 : 0.1}
+        sizeAttenuation
+      />
+    </points>
+  );
+}
+
+// Radar sweep effect
+function RadarSweep({ position, size = 0.8 }: { position: [number, number, number]; size?: number }) {
+  const sweepRef = useRef<THREE.Mesh>(null);
+  const [angle, setAngle] = useState(0);
+
+  useFrame((state) => {
+    const newAngle = state.clock.elapsedTime * 2;
+    setAngle(newAngle);
+    if (sweepRef.current) {
+      sweepRef.current.rotation.z = newAngle;
+    }
+  });
+
+  return (
+    <group position={position}>
+      {/* Radar circles */}
+      {[0.2, 0.4, 0.6, 0.8].map((r, i) => (
+        <mesh key={i}>
+          <ringGeometry args={[r * size - 0.01, r * size, 64]} />
+          <meshBasicMaterial color="#00ff88" transparent opacity={0.2} />
+        </mesh>
+      ))}
+      {/* Sweep line */}
+      <mesh ref={sweepRef}>
+        <planeGeometry args={[size, 0.01]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.8} />
+      </mesh>
+      {/* Center dot */}
+      <mesh>
+        <circleGeometry args={[0.03, 16]} />
+        <meshBasicMaterial color="#00ff88" />
+      </mesh>
+    </group>
+  );
+}
+
+// Enhanced portrait with face silhouette
+function EnhancedPortrait({ speaking, isAI, label }: { speaking: boolean; isAI: boolean; label: string }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const glowRef = useRef<THREE.Mesh>(null);
+  const waveRef = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    if (groupRef.current) {
+      // Breathing animation
+      const breathe = 1 + Math.sin(state.clock.elapsedTime * 2) * 0.01;
+      groupRef.current.scale.set(breathe, breathe, 1);
+    }
+
+    if (glowRef.current) {
+      const material = glowRef.current.material as THREE.MeshBasicMaterial;
+      if (speaking) {
+        material.opacity = 0.4 + Math.sin(state.clock.elapsedTime * 8) * 0.3;
+      } else {
+        material.opacity = 0.15 + Math.sin(state.clock.elapsedTime * 2) * 0.05;
+      }
+    }
+
+    // Voice waves animation
+    if (waveRef.current && speaking) {
+      waveRef.current.children.forEach((child, i) => {
+        const mesh = child as THREE.Mesh;
+        const scale = 1 + Math.sin(state.clock.elapsedTime * 12 + i * 1.5) * 0.15;
+        mesh.scale.set(scale, scale, 1);
+        const material = mesh.material as THREE.MeshBasicMaterial;
+        material.opacity = (1 - i * 0.25) * (0.5 + Math.sin(state.clock.elapsedTime * 10) * 0.3);
+      });
+    }
+  });
+
+  const color = isAI ? '#00ff88' : '#00aaff';
+
+  return (
+    <group ref={groupRef}>
+      {/* Outer glow */}
+      <mesh ref={glowRef} position={[0, 0, -0.2]}>
+        <circleGeometry args={[0.9, 32]} />
+        <meshBasicMaterial color={color} transparent opacity={0.2} />
+      </mesh>
+
+      {/* Portrait border - octagon */}
+      <mesh>
+        <ringGeometry args={[0.7, 0.75, 8]} />
+        <meshBasicMaterial color={color} />
+      </mesh>
+
+      {/* Inner border */}
+      <mesh>
+        <ringGeometry args={[0.55, 0.58, 8]} />
+        <meshBasicMaterial color={color} transparent opacity={0.6} />
+      </mesh>
+
+      {/* Face silhouette area */}
+      <mesh>
+        <circleGeometry args={[0.52, 32]} />
+        <meshBasicMaterial color="#001a0d" />
+      </mesh>
+
+      {/* Simple face silhouette */}
+      <group position={[0, 0.05, 0.01]}>
+        {/* Head outline */}
+        <mesh position={[0, 0.1, 0]}>
+          <circleGeometry args={[0.25, 32]} />
+          <meshBasicMaterial color={color} transparent opacity={0.15} />
+        </mesh>
+        {/* Shoulders */}
+        <mesh position={[0, -0.25, 0]}>
+          <planeGeometry args={[0.5, 0.2]} />
+          <meshBasicMaterial color={color} transparent opacity={0.15} />
+        </mesh>
+      </group>
+
+      {/* Voice waves - when speaking */}
+      <group ref={waveRef} position={[0, 0, 0.05]}>
+        {speaking && [0.6, 0.75, 0.9].map((size, i) => (
+          <mesh key={i}>
+            <ringGeometry args={[size - 0.02, size, 32]} />
+            <meshBasicMaterial color={color} transparent opacity={0.3} />
+          </mesh>
+        ))}
+      </group>
+
+      {/* Corner decorations */}
+      {[
+        { pos: [-0.6, 0.6, 0], rot: 0 },
+        { pos: [0.6, 0.6, 0], rot: Math.PI / 2 },
+        { pos: [0.6, -0.6, 0], rot: Math.PI },
+        { pos: [-0.6, -0.6, 0], rot: -Math.PI / 2 }
+      ].map((corner, i) => (
+        <group key={i} position={corner.pos as [number, number, number]} rotation={[0, 0, corner.rot]}>
+          <mesh position={[0.08, 0, 0]}>
+            <planeGeometry args={[0.15, 0.02]} />
+            <meshBasicMaterial color={color} />
+          </mesh>
+          <mesh position={[0, 0.08, 0]}>
+            <planeGeometry args={[0.02, 0.15]} />
+            <meshBasicMaterial color={color} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Status indicator */}
+      <mesh position={[0, -0.9, 0]}>
+        <circleGeometry args={[0.04, 16]} />
+        <meshBasicMaterial color={speaking ? '#ffffff' : color} />
+      </mesh>
+    </group>
+  );
+}
+
+// Enhanced waveform display
+function EnhancedWaveform({ active }: { active: boolean }) {
+  const barsRef = useRef<THREE.Group>(null);
+  const barCount = 32;
+
+  useFrame((state) => {
+    if (barsRef.current) {
+      barsRef.current.children.forEach((child, i) => {
+        const mesh = child as THREE.Mesh;
+        if (active) {
+          // Complex waveform simulation
+          const wave1 = Math.sin(state.clock.elapsedTime * 8 + i * 0.3);
+          const wave2 = Math.sin(state.clock.elapsedTime * 12 + i * 0.2);
+          const noise = Math.random() * 0.3;
+          const scale = 0.3 + Math.abs(wave1 * 0.5 + wave2 * 0.3 + noise);
+          mesh.scale.y = scale;
+
+          const material = mesh.material as THREE.MeshBasicMaterial;
+          material.opacity = 0.6 + scale * 0.4;
+        } else {
+          mesh.scale.y = 0.1 + Math.sin(state.clock.elapsedTime + i * 0.5) * 0.05;
+        }
+      });
+    }
+  });
+
+  return (
+    <group ref={barsRef}>
+      {Array.from({ length: barCount }).map((_, i) => (
+        <mesh key={i} position={[-1.5 + i * (3 / barCount), 0, 0]}>
+          <boxGeometry args={[0.06, 0.4, 0.01]} />
+          <meshBasicMaterial color="#00ff88" transparent opacity={0.7} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// Signal strength indicator
+function SignalStrength({ strength = 4 }: { strength?: number }) {
   return (
     <group>
-      {/* Outer frame corners */}
-      <mesh position={[-1.8, 1, 0]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-      <mesh position={[-1.8, 1, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-
-      <mesh position={[1.8, 1, 0]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-      <mesh position={[1.8, 1, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-
-      <mesh position={[-1.8, -1, 0]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-      <mesh position={[-1.8, -1, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-
-      <mesh position={[1.8, -1, 0]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-      <mesh position={[1.8, -1, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <planeGeometry args={[0.3, 0.02]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-
-      {/* Tech lines */}
-      <mesh position={[0, 1.1, 0]}>
-        <planeGeometry args={[2.5, 0.005]} />
-        <meshBasicMaterial color="#00ff88" transparent opacity={0.5} />
-      </mesh>
-      <mesh position={[0, -1.1, 0]}>
-        <planeGeometry args={[2.5, 0.005]} />
-        <meshBasicMaterial color="#00ff88" transparent opacity={0.5} />
-      </mesh>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <mesh key={i} position={[i * 0.12, i * 0.05, 0]}>
+          <boxGeometry args={[0.08, 0.1 + i * 0.08, 0.01]} />
+          <meshBasicMaterial
+            color="#00ff88"
+            transparent
+            opacity={i < strength ? 0.9 : 0.2}
+          />
+        </mesh>
+      ))}
     </group>
   );
 }
 
-// Frequency indicator
-function FrequencyDisplay({ frequency }: { frequency: string }) {
+// Status text display
+function StatusDisplay({ text, position }: { text: string; position: [number, number, number] }) {
+  const textRef = useRef<THREE.Mesh>(null);
+
+  useFrame((state) => {
+    if (textRef.current) {
+      const material = textRef.current.material as THREE.MeshBasicMaterial;
+      material.opacity = 0.7 + Math.sin(state.clock.elapsedTime * 4) * 0.3;
+    }
+  });
+
   return (
-    <group position={[0, 1.3, 0]}>
-      <Text
-        fontSize={0.12}
-        color="#00ff88"
-        anchorX="center"
-        anchorY="middle"
-        font="/fonts/share-tech-mono.woff"
-      >
-        {`FREQUENCY: ${frequency}`}
-      </Text>
+    <Text
+      ref={textRef}
+      position={position}
+      fontSize={0.12}
+      color="#00ff88"
+      anchorX="center"
+      anchorY="middle"
+      font="/fonts/ShareTechMono-Regular.ttf"
+      characters="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-"
+    >
+      {text}
+    </Text>
+  );
+}
+
+// MGS-style frame with tech details
+function TechFrame() {
+  const frameRef = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    if (frameRef.current) {
+      // Subtle frame pulse
+      frameRef.current.children.forEach((child, i) => {
+        if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshBasicMaterial) {
+          child.material.opacity = 0.6 + Math.sin(state.clock.elapsedTime * 2 + i * 0.5) * 0.2;
+        }
+      });
+    }
+  });
+
+  return (
+    <group ref={frameRef}>
+      {/* Main frame border */}
+      <mesh position={[0, 1.5, 0]}>
+        <planeGeometry args={[5.5, 0.02]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.8} />
+      </mesh>
+      <mesh position={[0, -1.5, 0]}>
+        <planeGeometry args={[5.5, 0.02]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.8} />
+      </mesh>
+      <mesh position={[-2.75, 0, 0]}>
+        <planeGeometry args={[0.02, 3]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.8} />
+      </mesh>
+      <mesh position={[2.75, 0, 0]}>
+        <planeGeometry args={[0.02, 3]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.8} />
+      </mesh>
+
+      {/* Corner accents */}
+      {[[-2.75, 1.5], [2.75, 1.5], [-2.75, -1.5], [2.75, -1.5]].map(([x, y], i) => (
+        <group key={i} position={[x, y, 0]}>
+          <mesh position={[x > 0 ? -0.15 : 0.15, 0, 0]}>
+            <planeGeometry args={[0.3, 0.04]} />
+            <meshBasicMaterial color="#00ff88" />
+          </mesh>
+          <mesh position={[0, y > 0 ? -0.15 : 0.15, 0]}>
+            <planeGeometry args={[0.04, 0.3]} />
+            <meshBasicMaterial color="#00ff88" />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Top info bar */}
+      <mesh position={[0, 1.35, 0]}>
+        <planeGeometry args={[3, 0.005]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.4} />
+      </mesh>
+
+      {/* Bottom info bar */}
+      <mesh position={[0, -1.35, 0]}>
+        <planeGeometry args={[3, 0.005]} />
+        <meshBasicMaterial color="#00ff88" transparent opacity={0.4} />
+      </mesh>
     </group>
   );
 }
 
-// Main 3D codec scene
-function CodecScene({ isCalling, isSpeaking }: { isCalling: boolean; isSpeaking: boolean }) {
+// Main 3D codec scene - enhanced version
+function CodecScene({ isCalling, isSpeaking, frequency, status }: {
+  isCalling: boolean;
+  isSpeaking: boolean;
+  frequency: string;
+  status: string;
+}) {
   return (
     <>
-      <ambientLight intensity={0.5} />
-      <pointLight position={[10, 10, 10]} />
+      <color attach="background" args={['#000a04']} />
+      <ambientLight intensity={0.3} />
 
-      <CodecFrame />
+      {/* Background elements */}
+      <GridBackground />
+      <StaticNoise active={isCalling} />
+
+      {/* Main frame */}
+      <TechFrame />
 
       {/* AI Portrait - Left side */}
-      <group position={[-1, 0.2, 0]}>
-        <CodecPortrait speaking={isSpeaking} isAI={true} />
+      <group position={[-1.4, 0.3, 0]}>
+        <EnhancedPortrait speaking={isSpeaking} isAI={true} label="CODEC AI" />
         <Text
-          position={[0, -0.65, 0]}
-          fontSize={0.08}
+          position={[0, -1.05, 0]}
+          fontSize={0.1}
           color="#00ff88"
           anchorX="center"
+          font="/fonts/ShareTechMono-Regular.ttf"
         >
           CODEC AI
         </Text>
       </group>
 
       {/* User Portrait - Right side */}
-      <group position={[1, 0.2, 0]}>
-        <CodecPortrait speaking={!isSpeaking && isCalling} isAI={false} />
+      <group position={[1.4, 0.3, 0]}>
+        <EnhancedPortrait speaking={!isSpeaking && isCalling} isAI={false} label="OPERATOR" />
         <Text
-          position={[0, -0.65, 0]}
-          fontSize={0.08}
+          position={[0, -1.05, 0]}
+          fontSize={0.1}
           color="#00aaff"
           anchorX="center"
+          font="/fonts/ShareTechMono-Regular.ttf"
         >
           OPERATOR
         </Text>
       </group>
 
-      {/* Center waveform */}
-      <group position={[0, -0.3, 0]}>
-        <AudioWaveform active={isCalling} />
+      {/* Center section */}
+      <group position={[0, -0.8, 0]}>
+        <EnhancedWaveform active={isCalling} />
       </group>
 
-      <FrequencyDisplay frequency={isCalling ? "140.85" : "141.12"} />
+      {/* Radar displays */}
+      <RadarSweep position={[-2.2, -0.9, 0]} size={0.4} />
+      <RadarSweep position={[2.2, -0.9, 0]} size={0.4} />
+
+      {/* Top status bar */}
+      <group position={[0, 1.65, 0]}>
+        <Text
+          position={[-1.8, 0, 0]}
+          fontSize={0.08}
+          color="#00ff88"
+          anchorX="left"
+          font="/fonts/ShareTechMono-Regular.ttf"
+        >
+          {`FREQ: ${frequency}`}
+        </Text>
+        <Text
+          position={[0, 0, 0]}
+          fontSize={0.1}
+          color="#00ff88"
+          anchorX="center"
+          font="/fonts/ShareTechMono-Regular.ttf"
+        >
+          {status}
+        </Text>
+        <group position={[2, 0, 0]}>
+          <SignalStrength strength={isCalling ? 4 : 2} />
+        </group>
+      </group>
+
+      {/* Bottom status */}
+      <Text
+        position={[0, -1.65, 0]}
+        fontSize={0.07}
+        color="#00ff88"
+        anchorX="center"
+        font="/fonts/ShareTechMono-Regular.ttf"
+      >
+        {isCalling ? 'SECURE CHANNEL ESTABLISHED' : 'AWAITING TRANSMISSION'}
+      </Text>
     </>
   );
 }
@@ -722,7 +994,7 @@ export default function Home() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-codec-green font-mono tracking-wider">CODEC</h1>
-            <p className="text-xs text-codec-green-dim font-mono">v7.0 // TACTICAL AI</p>
+            <p className="text-xs text-codec-green-dim font-mono">v8.0 // TACTICAL AI</p>
           </div>
         </div>
 
@@ -838,46 +1110,64 @@ export default function Home() {
         </div>
       )}
 
-      {/* Calling View with Three.js */}
+      {/* Calling View with Three.js - Full Screen MGS Codec */}
       {view === 'calling' && (
-        <div className="flex-1 flex flex-col">
-          {/* 3D Codec Scene */}
-          <div className="h-64 relative">
-            <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
+        <div className="flex-1 flex flex-col relative overflow-hidden">
+          {/* Full Screen 3D Codec Scene */}
+          <div className="absolute inset-0">
+            <Canvas camera={{ position: [0, 0, 4.5], fov: 45 }}>
               <Suspense fallback={null}>
                 <CodecScene
                   isCalling={true}
                   isSpeaking={callStatus?.status === 'in-progress'}
+                  frequency="140.85"
+                  status={callStatus?.status?.toUpperCase().replace('-', ' ') || 'CONNECTING'}
                 />
               </Suspense>
             </Canvas>
           </div>
 
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-codec-green mb-2 font-mono tracking-wider">
-                {pendingCall?.business?.toUpperCase() || 'ESTABLISHING LINK'}
-              </h2>
-              <p className="text-codec-green-dim font-mono mb-4">{pendingCall?.phone}</p>
-
-              <div className="codec-status-bar mb-6">
-                <span className={`codec-status-dot ${callStatus?.summaryStatus === 'processing' ? 'processing' : ''}`} />
-                <span className="text-codec-green font-mono uppercase text-sm">
-                  {callStatus?.summaryStatus === 'processing'
-                    ? 'DECODING TRANSMISSION...'
-                    : callStatus?.status || 'CONNECTING'}
-                </span>
+          {/* Overlay UI */}
+          <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4">
+            {/* Top bar */}
+            <div className="flex justify-between items-start">
+              <div className="codec-hud-panel p-3 pointer-events-auto">
+                <div className="text-xs text-codec-green-dim font-mono">TARGET</div>
+                <div className="text-lg font-bold text-codec-green font-mono tracking-wider">
+                  {pendingCall?.business?.toUpperCase() || 'UNKNOWN'}
+                </div>
+                <div className="text-sm text-codec-green-dim font-mono">{pendingCall?.phone}</div>
               </div>
 
-              <p className="text-sm text-codec-green-dim mb-6 font-mono">
-                {callStatus?.summaryStatus === 'processing'
-                  ? 'ANALYZING COMM DATA...'
-                  : "AI OPERATIVE ENGAGED"}
-              </p>
+              <div className="codec-hud-panel p-3 pointer-events-auto">
+                <div className="text-xs text-codec-green-dim font-mono">MISSION</div>
+                <div className="text-sm text-codec-green font-mono uppercase">
+                  {pendingCall?.task || 'ESTABLISH CONTACT'}
+                </div>
+              </div>
+            </div>
 
+            {/* Center status */}
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center">
+                <div className="codec-status-indicator-large mb-4">
+                  <span className={`codec-status-dot-large ${callStatus?.status === 'in-progress' ? 'active' : callStatus?.summaryStatus === 'processing' ? 'processing' : ''}`} />
+                </div>
+                <div className="text-codec-green font-mono text-lg tracking-widest">
+                  {callStatus?.summaryStatus === 'processing'
+                    ? 'DECODING TRANSMISSION...'
+                    : callStatus?.status === 'in-progress'
+                    ? 'TRANSMISSION ACTIVE'
+                    : 'ESTABLISHING LINK...'}
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom bar */}
+            <div className="flex justify-center">
               <button
                 onClick={hangupCall}
-                className="codec-button-danger px-8 py-3 font-mono tracking-wider inline-flex items-center gap-2"
+                className="codec-button-danger px-8 py-3 font-mono tracking-wider inline-flex items-center gap-2 pointer-events-auto"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
