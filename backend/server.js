@@ -164,7 +164,7 @@ let inboundConfig = {
     instructions: "Be helpful and concise."
 };
 
-// Cleanup old calls, transcripts and stale Gemini sessions
+// Cleanup old calls, transcripts, conversation state and stale Gemini sessions
 setInterval(() => {
     const now = Date.now();
     for (const [k, v] of callState.entries()) {
@@ -173,6 +173,7 @@ setInterval(() => {
             callTranscripts.delete(k);
             callAudioBuffers.delete(k);
             callSummaries.delete(k);
+            callConversationState.delete(k); // Clean up conversation state
         }
     }
     for (const [k, v] of conversationState.entries()) {
@@ -185,6 +186,12 @@ setInterval(() => {
             pendingGeminiSessions.delete(k);
         }
     }
+    // Clean up orphaned conversation states
+    for (const [k, v] of callConversationState.entries()) {
+        if (!callState.has(k) && now - v.lastSpeakerTime > 5 * 60 * 1000) {
+            callConversationState.delete(k);
+        }
+    }
 }, 5 * 60 * 1000);
 
 // ============================================================================
@@ -195,12 +202,187 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'codec-480810';
 
 // Vertex AI Native Audio model (only in us-central1)
+// Using the latest native audio model with thinking capabilities
 const VERTEX_REGION = 'us-central1';
-const GEMINI_LIVE_MODEL = 'gemini-live-2.5-flash-preview-native-audio-09-2025';
+const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
 
 // Standard model for text chat (REST API with API key)
 const GEMINI_CHAT_MODEL = 'gemini-2.0-flash-exp';
 const GEMINI_REST_URL = 'https://generativelanguage.googleapis.com/v1beta';
+
+// ============================================================================
+// CALL STATE & DETECTION PATTERNS
+// ============================================================================
+
+// Patterns for detecting voicemail, IVR systems, and auto-responses
+const DETECTION_PATTERNS = {
+    // Voicemail detection phrases
+    voicemail: [
+        'leave a message',
+        'leave your message',
+        'after the beep',
+        'after the tone',
+        'record your message',
+        'not available',
+        'cannot take your call',
+        'voicemail',
+        'mailbox',
+        'please leave',
+        'at the beep',
+        'press pound',
+        'press star'
+    ],
+
+    // IVR/Auto-attendant detection
+    ivr: [
+        'press 1',
+        'press 2',
+        'press 3',
+        'press 4',
+        'press 5',
+        'press 6',
+        'press 7',
+        'press 8',
+        'press 9',
+        'press 0',
+        'press one',
+        'press two',
+        'dial',
+        'for sales',
+        'for support',
+        'for billing',
+        'for hours',
+        'main menu',
+        'automated system',
+        'please hold',
+        'your call is important',
+        'all representatives',
+        'wait time',
+        'queue'
+    ],
+
+    // Call termination phrases (from the other party)
+    callEnd: [
+        'goodbye',
+        'bye bye',
+        'bye-bye',
+        'have a good',
+        'have a great',
+        'take care',
+        'thank you for calling',
+        'thanks for calling',
+        'is there anything else',
+        'anything else i can help',
+        'have a nice day',
+        'have a wonderful'
+    ],
+
+    // Waiting/hold music detection (silence patterns)
+    holdPatterns: [
+        'please hold',
+        'hold please',
+        'one moment',
+        'just a moment',
+        'hold on',
+        'let me check',
+        'let me see',
+        'bear with me',
+        'give me a second',
+        'one second'
+    ]
+};
+
+// Call conversation state tracking
+const callConversationState = new Map();
+
+// Initialize call conversation state
+function initCallConversationState(callSid) {
+    callConversationState.set(callSid, {
+        phase: 'greeting',        // greeting, conversation, waiting, ending
+        turnCount: 0,
+        lastSpeaker: null,
+        lastSpeakerTime: Date.now(),
+        silenceDuration: 0,
+        detectedVoicemail: false,
+        detectedIVR: false,
+        waitingForResponse: false,
+        goodbyeDetected: false,
+        transcriptBuffer: [],
+        aiSpokeCount: 0,
+        userSpokeCount: 0
+    });
+    return callConversationState.get(callSid);
+}
+
+// Analyze transcript for patterns
+function analyzeTranscript(text, patterns) {
+    const lowerText = text.toLowerCase();
+    for (const pattern of patterns) {
+        if (lowerText.includes(pattern)) {
+            return { detected: true, pattern };
+        }
+    }
+    return { detected: false, pattern: null };
+}
+
+// Process conversation turn and detect patterns
+function processConversationTurn(callSid, speaker, text) {
+    let state = callConversationState.get(callSid);
+    if (!state) {
+        state = initCallConversationState(callSid);
+    }
+
+    state.turnCount++;
+    state.lastSpeaker = speaker;
+    state.lastSpeakerTime = Date.now();
+    state.transcriptBuffer.push({ speaker, text, time: Date.now() });
+
+    // Keep buffer limited
+    if (state.transcriptBuffer.length > 20) {
+        state.transcriptBuffer.shift();
+    }
+
+    if (speaker === 'AI') {
+        state.aiSpokeCount++;
+        state.waitingForResponse = true;
+    } else {
+        state.userSpokeCount++;
+        state.waitingForResponse = false;
+
+        // Check for voicemail
+        const voicemailCheck = analyzeTranscript(text, DETECTION_PATTERNS.voicemail);
+        if (voicemailCheck.detected) {
+            console.log(`[DETECT] Voicemail detected: "${voicemailCheck.pattern}"`);
+            state.detectedVoicemail = true;
+            state.phase = 'voicemail';
+        }
+
+        // Check for IVR
+        const ivrCheck = analyzeTranscript(text, DETECTION_PATTERNS.ivr);
+        if (ivrCheck.detected) {
+            console.log(`[DETECT] IVR detected: "${ivrCheck.pattern}"`);
+            state.detectedIVR = true;
+            state.phase = 'ivr';
+        }
+
+        // Check for call end
+        const endCheck = analyzeTranscript(text, DETECTION_PATTERNS.callEnd);
+        if (endCheck.detected && state.turnCount > 2) {
+            console.log(`[DETECT] Call ending detected: "${endCheck.pattern}"`);
+            state.goodbyeDetected = true;
+            state.phase = 'ending';
+        }
+
+        // Check for hold/waiting
+        const holdCheck = analyzeTranscript(text, DETECTION_PATTERNS.holdPatterns);
+        if (holdCheck.detected) {
+            console.log(`[DETECT] Hold/waiting detected: "${holdCheck.pattern}"`);
+            state.phase = 'waiting';
+        }
+    }
+
+    return state;
+}
 
 // Get access token from GCP metadata server (for Vertex AI)
 async function getAccessToken() {
@@ -680,14 +862,21 @@ PURPOSE: ${state.task || 'general assistance'}
 
 INSTRUCTIONS: ${state.details || 'Be helpful and concise.'}
 
+CONVERSATION RULES:
+1. ALWAYS wait for the caller to finish speaking before responding
+2. When you ask a question, WAIT for their answer - do not continue talking
+3. Keep responses brief (1-2 sentences max)
+4. If they say goodbye or thank you, respond briefly and end naturally
+5. Match their energy and pace
+
 STYLE:
 - Speak naturally with a calm, friendly Australian accent
-- Keep responses brief (1-2 sentences)
-- Listen actively and respond appropriately
-- Be warm and professional`;
+- Listen actively - pause after speaking to let them respond
+- Be warm and professional
+- Never interrupt or talk over them`;
     }
 
-    // Outbound call - agentic
+    // Outbound call - agentic with better conversation handling
     return `You are an AI assistant making a phone call on behalf of a user.
 
 CALLING: ${state.businessName || 'Unknown'}
@@ -695,19 +884,38 @@ PURPOSE: ${state.task || 'general inquiry'}
 DETAILS: ${state.details || 'No additional details'}
 YOUR NAME: ${state.callerName || 'Alex'}
 
-INSTRUCTIONS:
-1. Start with "Hey! This is ${state.callerName || 'Alex'} calling"
-2. Briefly explain why you're calling
-3. Accomplish the task (make reservation, ask questions, etc.)
-4. Be polite, natural, and conversational
-5. Keep responses short (1-2 sentences)
-6. Thank them and say goodbye when done
+CRITICAL CONVERSATION RULES:
+1. ALWAYS wait for the other person to finish speaking before responding
+2. After you speak, STOP and WAIT for their reply - do not keep talking
+3. When you ask a question, PAUSE and let them answer
+4. Keep each response to 1-2 sentences maximum
+5. If you hear "hello?" or silence, wait - they may be checking if you're there
+6. If they put you on hold, wait silently until they return
+
+VOICEMAIL/IVR HANDLING:
+- If you hear "leave a message after the beep" or similar: Leave a brief message with your name, callback number, and reason for calling
+- If you hear "press 1 for..." or menu options: Wait and listen, then explain you're calling about ${state.task}
+- If you hear hold music or "please hold": Wait silently and patiently
+
+CALL FLOW:
+1. Greeting: "Hey! This is ${state.callerName || 'Alex'} calling" - then WAIT for response
+2. When they respond, briefly explain why you're calling - then WAIT
+3. Have a natural back-and-forth conversation - one exchange at a time
+4. When your goal is accomplished, thank them
+5. When they say goodbye (or you're done): Say "Thanks so much, bye!" and END
+
+ENDING THE CALL:
+- If they say "goodbye", "bye", "have a good day", etc. - respond briefly with "Thanks, bye!" and stop
+- Do NOT keep talking after goodbyes are exchanged
+- When the task is complete, initiate goodbye: "Perfect, thank you so much! Have a great day, bye!"
 
 STYLE:
 - Speak with a calm, friendly Australian accent
-- Be conversational, not robotic
+- Be conversational and natural, not robotic
 - React naturally to what they say
-- If they ask questions, answer helpfully`;
+- Match their pace and energy
+- If they seem rushed, be brief
+- If they're chatty, you can be warmer`;
 }
 
 async function preEstablishGemini(sessionId, state) {
@@ -742,6 +950,9 @@ async function preEstablishGemini(sessionId, state) {
             // Vertex AI model path format
             const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
 
+            // Initialize conversation state for this call
+            initCallConversationState(sessionId);
+
             const setupMsg = {
                 setup: {
                     model: modelPath,
@@ -749,18 +960,40 @@ async function preEstablishGemini(sessionId, state) {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
                             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                        },
+                        // Enable thinking for better responses
+                        thinkingConfig: {
+                            thinkingBudget: 512  // Moderate thinking for phone calls
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
+                    // Enable input and output transcription for better tracking
+                    inputAudioTranscription: {},
+                    outputAudioTranscription: {},
+                    // Enhanced VAD configuration for natural conversation
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            // Use defaults - custom sensitivity not supported in Vertex AI
+                            disabled: false,
+                            // Higher sensitivity to detect when user starts speaking
+                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+                            // Lower end sensitivity to wait for user to fully finish
+                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                            // Longer silence before considering speech ended (wait for user)
+                            silenceDurationMs: 1200,
+                            // Some padding before speech detection
+                            prefixPaddingMs: 100
                         }
-                    }
+                    },
+                    // Enable proactive audio - AI decides when to respond
+                    proactivity: {
+                        proactiveAudio: true
+                    },
+                    // Enable affective dialog for natural emotional responses
+                    enableAffectiveDialog: true
                 }
             };
 
-            console.log(`[GEMINI] Setup msg: model=${modelPath}`);
+            console.log(`[GEMINI] Setup msg: model=${modelPath}, VAD=enhanced, thinking=enabled`);
             geminiWs.send(JSON.stringify(setupMsg));
         });
 
@@ -923,7 +1156,7 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '6.1', mode: 'Vertex AI Native Audio + Security' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '8.0', mode: 'Enhanced VAD + Proactive Audio + Call Detection' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size, sessions: activeSessions.size }));
 
 // Login endpoint - validates access code and returns session token
@@ -1188,24 +1421,120 @@ wss.on('connection', (twilioWs) => {
         }
     };
 
+    // Auto-hangup timer for detected call endings
+    let goodbyeHangupTimer = null;
+
+    // Helper to trigger call hangup
+    const triggerCallEnd = (reason) => {
+        if (goodbyeHangupTimer) return; // Already scheduled
+        console.log(`[CALL] Scheduling hangup in 3s - reason: ${reason}`);
+
+        goodbyeHangupTimer = setTimeout(async () => {
+            if (callSid) {
+                console.log(`[CALL] Auto-hanging up call ${callSid}: ${reason}`);
+                try {
+                    const client = getTwilioClient();
+                    await client.calls(callSid).update({ status: 'completed' });
+                } catch (e) {
+                    console.error(`[CALL] Auto-hangup failed:`, e.message);
+                }
+            }
+        }, 3000); // 3 second delay after goodbye
+    };
+
     // Wire up Gemini message handler to stream audio to Twilio
     const wireGeminiToTwilio = (gWs) => {
         gWs.on('message', (data) => {
             try {
                 const msg = JSON.parse(data.toString());
 
-                // Handle interruption
+                // Handle interruption - user started speaking
                 if (msg.serverContent?.interrupted) {
-                    console.log('[GEMINI] Interrupted');
+                    console.log('[GEMINI] Interrupted by user speech');
+                    // Update conversation state
+                    if (callSid) {
+                        const convState = callConversationState.get(callSid);
+                        if (convState) {
+                            convState.waitingForResponse = false;
+                        }
+                    }
                     return;
                 }
 
-                // Capture transcript from text parts
+                // Process OUTPUT transcription (AI speech text)
+                if (msg.serverContent?.outputTranscription?.text) {
+                    const aiText = msg.serverContent.outputTranscription.text;
+                    console.log(`[TRANSCRIPT] AI: ${aiText}`);
+                    addToTranscript('AI', aiText);
+
+                    // Process conversation turn and check for patterns
+                    if (callSid) {
+                        const convState = processConversationTurn(callSid, 'AI', aiText);
+
+                        // Check if AI said goodbye - schedule hangup
+                        const goodbyeCheck = analyzeTranscript(aiText, DETECTION_PATTERNS.callEnd);
+                        if (goodbyeCheck.detected && convState.turnCount > 2) {
+                            console.log(`[DETECT] AI said goodbye: "${goodbyeCheck.pattern}"`);
+                            triggerCallEnd('AI said goodbye');
+                        }
+                    }
+                }
+
+                // Process INPUT transcription (user/caller speech text)
+                if (msg.serverContent?.inputTranscription?.text) {
+                    const userText = msg.serverContent.inputTranscription.text;
+                    console.log(`[TRANSCRIPT] User: ${userText}`);
+                    addToTranscript('User', userText);
+
+                    // Process conversation turn and detect patterns
+                    if (callSid) {
+                        const convState = processConversationTurn(callSid, 'User', userText);
+
+                        // If goodbye detected from user, AI should respond then we hangup
+                        if (convState.goodbyeDetected) {
+                            console.log(`[DETECT] User said goodbye - call will end after AI responds`);
+                        }
+
+                        // If voicemail detected, log it
+                        if (convState.detectedVoicemail) {
+                            console.log(`[DETECT] Voicemail system detected for call ${callSid}`);
+                            if (callState.has(callSid)) {
+                                callState.get(callSid).hitVoicemail = true;
+                            }
+                        }
+
+                        // If IVR detected, log it
+                        if (convState.detectedIVR) {
+                            console.log(`[DETECT] IVR/auto-attendant detected for call ${callSid}`);
+                            if (callState.has(callSid)) {
+                                callState.get(callSid).hitIVR = true;
+                            }
+                        }
+                    }
+                }
+
+                // Legacy: capture text from model turn parts (fallback)
+                if (msg.serverContent?.inputTranscript) {
+                    const inputText = msg.serverContent.inputTranscript;
+                    console.log(`[TRANSCRIPT] User (legacy): ${inputText}`);
+                    addToTranscript('User', inputText);
+                    if (callSid) {
+                        processConversationTurn(callSid, 'User', inputText);
+                    }
+                }
+
+                // Stream audio to Twilio
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
-                        // Capture text for transcript
+                        // Capture text for transcript (if transcription not available)
                         if (part.text) {
-                            addToTranscript('AI', part.text);
+                            // Only add if we haven't already captured via outputTranscription
+                            if (!msg.serverContent?.outputTranscription?.text) {
+                                addToTranscript('AI', part.text);
+                                if (callSid) {
+                                    processConversationTurn(callSid, 'AI', part.text);
+                                }
+                            }
                         }
                         // Stream audio to Twilio and record for transcription
                         if (part.inlineData?.data) {
@@ -1228,9 +1557,21 @@ wss.on('connection', (twilioWs) => {
                     }
                 }
 
-                // Capture user speech transcript if available
-                if (msg.serverContent?.inputTranscript) {
-                    addToTranscript('User', msg.serverContent.inputTranscript);
+                // Turn complete - AI finished speaking
+                if (msg.serverContent?.turnComplete) {
+                    console.log('[GEMINI] Turn complete - waiting for user');
+                    if (callSid) {
+                        const convState = callConversationState.get(callSid);
+                        if (convState) {
+                            convState.waitingForResponse = true;
+                            convState.lastSpeakerTime = Date.now();
+
+                            // If we detected goodbye in this turn, schedule hangup
+                            if (convState.goodbyeDetected && convState.phase === 'ending') {
+                                triggerCallEnd('Goodbye exchange complete');
+                            }
+                        }
+                    }
                 }
             } catch (e) {
                 console.error('[GEMINI] Parse error:', e.message);
@@ -1292,6 +1633,9 @@ wss.on('connection', (twilioWs) => {
         geminiWs.on('open', () => {
             console.log('[GEMINI] Fallback connected to Vertex AI');
 
+            // Initialize conversation state for this call
+            if (callSid) initCallConversationState(callSid);
+
             // Use the improved prompt builder
             const prompt = buildVoicePrompt({ ...state, direction });
 
@@ -1305,12 +1649,28 @@ wss.on('connection', (twilioWs) => {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
                             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                        },
+                        // Enable thinking for better responses
+                        thinkingConfig: {
+                            thinkingBudget: 512
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
+                    // Enable input and output transcription
+                    inputAudioTranscription: {},
+                    outputAudioTranscription: {},
+                    // Enhanced VAD configuration
                     realtimeInputConfig: {
-                        automaticActivityDetection: {}
-                    }
+                        automaticActivityDetection: {
+                            disabled: false,
+                            startOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                            silenceDurationMs: 1200,
+                            prefixPaddingMs: 100
+                        }
+                    },
+                    proactivity: { proactiveAudio: true },
+                    enableAffectiveDialog: true
                 }
             }));
         });
@@ -1332,15 +1692,53 @@ wss.on('connection', (twilioWs) => {
 
                 // Handle interruption
                 if (msg.serverContent?.interrupted) {
-                    console.log('[GEMINI] Interrupted');
+                    console.log('[GEMINI] Fallback interrupted by user');
+                    if (callSid) {
+                        const convState = callConversationState.get(callSid);
+                        if (convState) convState.waitingForResponse = false;
+                    }
                     return;
                 }
 
-                // Capture transcript and stream audio
+                // Process OUTPUT transcription (AI speech)
+                if (msg.serverContent?.outputTranscription?.text) {
+                    const aiText = msg.serverContent.outputTranscription.text;
+                    console.log(`[TRANSCRIPT] AI (fallback): ${aiText}`);
+                    addToTranscript('AI', aiText);
+                    if (callSid) {
+                        const convState = processConversationTurn(callSid, 'AI', aiText);
+                        // Check for goodbye
+                        const goodbyeCheck = analyzeTranscript(aiText, DETECTION_PATTERNS.callEnd);
+                        if (goodbyeCheck.detected && convState.turnCount > 2) {
+                            triggerCallEnd('AI said goodbye (fallback)');
+                        }
+                    }
+                }
+
+                // Process INPUT transcription (user speech)
+                if (msg.serverContent?.inputTranscription?.text) {
+                    const userText = msg.serverContent.inputTranscription.text;
+                    console.log(`[TRANSCRIPT] User (fallback): ${userText}`);
+                    addToTranscript('User', userText);
+                    if (callSid) {
+                        processConversationTurn(callSid, 'User', userText);
+                    }
+                }
+
+                // Legacy input transcript
+                if (msg.serverContent?.inputTranscript) {
+                    addToTranscript('User', msg.serverContent.inputTranscript);
+                    if (callSid) {
+                        processConversationTurn(callSid, 'User', msg.serverContent.inputTranscript);
+                    }
+                }
+
+                // Stream audio to Twilio
                 if (msg.serverContent?.modelTurn?.parts) {
                     for (const part of msg.serverContent.modelTurn.parts) {
-                        if (part.text) {
+                        if (part.text && !msg.serverContent?.outputTranscription?.text) {
                             addToTranscript('AI', part.text);
+                            if (callSid) processConversationTurn(callSid, 'AI', part.text);
                         }
                         if (part.inlineData?.data) {
                             const pcmRaw = Buffer.from(part.inlineData.data, 'base64');
@@ -1362,9 +1760,18 @@ wss.on('connection', (twilioWs) => {
                     }
                 }
 
-                // Capture user speech
-                if (msg.serverContent?.inputTranscript) {
-                    addToTranscript('User', msg.serverContent.inputTranscript);
+                // Turn complete
+                if (msg.serverContent?.turnComplete) {
+                    console.log('[GEMINI] Fallback turn complete');
+                    if (callSid) {
+                        const convState = callConversationState.get(callSid);
+                        if (convState) {
+                            convState.waitingForResponse = true;
+                            if (convState.goodbyeDetected && convState.phase === 'ending') {
+                                triggerCallEnd('Goodbye exchange complete (fallback)');
+                            }
+                        }
+                    }
                 }
             } catch (e) {
                 console.error('[GEMINI] Parse error:', e.message);
@@ -1472,4 +1879,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v7.0 Ready - Enhanced Audio Processing + Noise Suppression + AGC + MGS Frontend');
+console.log('[CODEC] v8.0 Ready - Enhanced VAD + Proactive Audio + Call Detection + Affective Dialog');
