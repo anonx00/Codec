@@ -857,71 +857,54 @@ function pcm24kToMulaw8k(pcmBuffer) {
 // PRE-ESTABLISH GEMINI SESSION (Vertex AI)
 // ============================================================================
 
-// Build voice AI prompt with full context
+// Build voice AI prompt with full context - OPTIMIZED FOR SPEED & NATURALNESS
 function buildVoicePrompt(state) {
     if (state.direction === 'inbound') {
-        return `You're answering a phone call for ${state.businessName}.
+        return `You're answering a call for ${state.businessName}. Greet with: "${state.greeting}"
 
-GREETING: "${state.greeting}"
+PURPOSE: ${state.task || 'help callers'}
+RULES: ${state.details || 'Be helpful'}
 
-PURPOSE: ${state.task || 'general assistance'}
+BE QUICK:
+- Respond in 1-2 SHORT sentences max
+- Don't ramble or over-explain
+- Listen more than you talk
+- When they finish talking, respond IMMEDIATELY
+- Match their pace - if they're brief, be brief
+- Say goodbye when done: "Thanks, bye!"
 
-INSTRUCTIONS: ${state.details || 'Be helpful and concise.'}
-
-CONVERSATION RULES:
-1. ALWAYS wait for the caller to finish speaking before responding
-2. When you ask a question, WAIT for their answer - do not continue talking
-3. Keep responses brief (1-2 sentences max)
-4. If they say goodbye or thank you, respond briefly and end naturally
-5. Match their energy and pace
-
-STYLE:
-- Speak naturally with a calm, friendly Australian accent
-- Listen actively - pause after speaking to let them respond
-- Be warm and professional
-- Never interrupt or talk over them`;
+VOICE: Friendly, natural, concise. Australian accent.`;
     }
 
-    // Outbound call - agentic with better conversation handling
-    return `You are an AI assistant making a phone call on behalf of a user.
+    // Outbound call - FAST & SMART
+    return `You're calling ${state.businessName || 'someone'} for: ${state.task || 'a quick question'}
 
-CALLING: ${state.businessName || 'Unknown'}
-PURPOSE: ${state.task || 'general inquiry'}
-DETAILS: ${state.details || 'No additional details'}
+DETAILS: ${state.details || 'None'}
 YOUR NAME: ${state.callerName || 'Alex'}
 
-CRITICAL CONVERSATION RULES:
-1. ALWAYS wait for the other person to finish speaking before responding
-2. After you speak, STOP and WAIT for their reply - do not keep talking
-3. When you ask a question, PAUSE and let them answer
-4. Keep each response to 1-2 sentences maximum
-5. If you hear "hello?" or silence, wait - they may be checking if you're there
-6. If they put you on hold, wait silently until they return
-
-VOICEMAIL/IVR HANDLING:
-- If you hear "leave a message after the beep" or similar: Leave a brief message with your name, callback number, and reason for calling
-- If you hear "press 1 for..." or menu options: Wait and listen, then explain you're calling about ${state.task}
-- If you hear hold music or "please hold": Wait silently and patiently
+CRITICAL - BE FAST:
+- Respond within 1 second of them finishing
+- Use SHORT sentences only (5-10 words ideal)
+- ONE thought per turn, then STOP and WAIT
+- Don't explain yourself or add filler words
+- React naturally: "Great!" "Perfect!" "Got it!"
 
 CALL FLOW:
-1. Greeting: "Hey! This is ${state.callerName || 'Alex'} calling" - then WAIT for response
-2. When they respond, briefly explain why you're calling - then WAIT
-3. Have a natural back-and-forth conversation - one exchange at a time
-4. When your goal is accomplished, thank them
-5. When they say goodbye (or you're done): Say "Thanks so much, bye!" and END
+1. "Hey! This is ${state.callerName || 'Alex'}" - STOP, wait for reply
+2. State your purpose in ONE sentence - STOP, wait
+3. Answer their questions briefly - STOP after each
+4. When done: "Perfect, thanks! Bye!"
 
-ENDING THE CALL:
-- If they say "goodbye", "bye", "have a good day", etc. - respond briefly with "Thanks, bye!" and stop
-- Do NOT keep talking after goodbyes are exchanged
-- When the task is complete, initiate goodbye: "Perfect, thank you so much! Have a great day, bye!"
+VOICEMAIL: Leave a 10-second message max with name + reason + "I'll try again later"
+HOLD: Wait silently, say "Still here" if they check
+IVR MENU: Wait for human, or say "I'm calling about ${state.task}"
 
-STYLE:
-- Speak with a calm, friendly Australian accent
-- Be conversational and natural, not robotic
-- React naturally to what they say
-- Match their pace and energy
-- If they seem rushed, be brief
-- If they're chatty, you can be warmer`;
+ENDINGS - When they say bye:
+- Reply "Thanks, bye!" and STOP immediately
+- Don't add anything after goodbye
+- If YOU'RE done, say "That's all I needed, thanks! Bye!"
+
+VOICE: Warm, quick, natural. Australian accent. No filler words.`;
 }
 
 async function preEstablishGemini(sessionId, state, modelIndex = 0) {
@@ -970,21 +953,27 @@ async function preEstablishGemini(sessionId, state, modelIndex = 0) {
             // Initialize conversation state for this call
             initCallConversationState(sessionId);
 
-            // Use simpler config that works with all models
+            // Optimized config for FAST responses
             const setupMsg = {
                 setup: {
                     model: modelPath,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } // Clear female voice
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
-                    // Basic VAD configuration that works with all models
+                    // FAST VAD - respond quickly after user stops speaking
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            disabled: false
+                            disabled: false,
+                            // Faster end-of-speech detection
+                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH",
+                            // Short silence = they're done talking
+                            prefixPaddingMs: 100,
+                            silenceDurationMs: 700  // 0.7 sec silence = respond
                         }
                     }
                 }
@@ -1183,7 +1172,7 @@ async function chat(convId, msg) {
 // API ROUTES
 // ============================================================================
 
-app.get('/', (_, res) => res.json({ name: 'CODEC', version: '8.0', mode: 'Enhanced VAD + Proactive Audio + Call Detection' }));
+app.get('/', (_, res) => res.json({ name: 'CODEC', version: '8.1', mode: 'Fast VAD + Smart Prompts + Minimalist UI' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', calls: callState.size, sessions: activeSessions.size }));
 
 // Login endpoint - validates access code and returns session token
@@ -1669,20 +1658,24 @@ wss.on('connection', (twilioWs) => {
             // Vertex AI model path format
             const modelPath = `projects/${GCP_PROJECT_ID}/locations/${VERTEX_REGION}/publishers/google/models/${GEMINI_LIVE_MODEL}`;
 
-            // Use simpler config that works with all models
+            // Optimized config for FAST responses
             geminiWs.send(JSON.stringify({
                 setup: {
                     model: modelPath,
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } }
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            disabled: false
+                            disabled: false,
+                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
+                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH",
+                            prefixPaddingMs: 100,
+                            silenceDurationMs: 700
                         }
                     }
                 }
@@ -1893,4 +1886,4 @@ wss.on('connection', (twilioWs) => {
     });
 });
 
-console.log('[CODEC] v8.0 Ready - Enhanced VAD + Proactive Audio + Call Detection + Affective Dialog');
+console.log('[CODEC] v8.1 Ready - Fast VAD (0.7s) + Smart Prompts + Minimalist UI');
