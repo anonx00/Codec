@@ -944,20 +944,14 @@ async function preEstablishGemini(sessionId, state) {
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } // Clear female voice
+                            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }
                         }
                     },
                     systemInstruction: { parts: [{ text: prompt }] },
-                    // FAST VAD - respond quickly after user stops speaking
+                    // Simple VAD config - let Gemini handle it
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            disabled: false,
-                            // Faster end-of-speech detection
-                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH",
-                            // Short silence = they're done talking
-                            prefixPaddingMs: 100,
-                            silenceDurationMs: 700  // 0.7 sec silence = respond
+                            disabled: false
                         }
                     }
                 }
@@ -1631,11 +1625,7 @@ wss.on('connection', (twilioWs) => {
                     systemInstruction: { parts: [{ text: prompt }] },
                     realtimeInputConfig: {
                         automaticActivityDetection: {
-                            disabled: false,
-                            startOfSpeechSensitivity: "START_OF_SPEECH_SENSITIVITY_HIGH",
-                            endOfSpeechSensitivity: "END_OF_SPEECH_SENSITIVITY_HIGH",
-                            prefixPaddingMs: 100,
-                            silenceDurationMs: 700
+                            disabled: false
                         }
                     }
                 }
